@@ -149,30 +149,50 @@ const mkSpotBadge = (sp: Spot) => {
     markersRef.current.push(startM, goalM);
 
     // CP markers (spot positions)
-    const cpMarkers: any[] = [];
-    for (const id of progress.cpSpotIds) {
-      const sp = spots.find(s=>s.ID===id);
-      if (!sp) continue;
-      const el = mk(reachedCp.has(id) ? `CP✓` : `CP`);
-      el.style.borderRadius = '999px';
-      cpMarkers.push(new AdvancedMarker({ map, position: {lat:sp.Latitude,lng:sp.Longitude}, content: el }));
-    }
-    markersRef.current.push(...cpMarkers);
+const cpMarkers: any[] = [];
+for (let i = 0; i < progress.cpSpotIds.length; i++) {
+  const id = progress.cpSpotIds[i];
+  const sp = spots.find(s => s.ID === id);
+  if (!sp) continue;
+
+  const el = mkCpBadge(i + 1, reachedCp.has(id));
+  cpMarkers.push(new AdvancedMarker({
+    map,
+    position: { lat: sp.Latitude, lng: sp.Longitude },
+    content: el,
+  }));
+}
+markersRef.current.push(...cpMarkers);
 
     // Spot markers (cluster)
-    const spotMarkers: any[] = spots.map(sp => {
-      const el = document.createElement('div');
-      el.style.width = '18px';
-      el.style.height = '18px';
-      el.style.borderRadius = '9px';
-      el.style.border = '1px solid rgba(0,0,0,.25)';
-      el.style.background = visited.has(sp.ID) ? 'rgba(0,0,0,.75)' : 'rgba(255,255,255,.95)';
-      el.title = sp.Name;
-      return new AdvancedMarker({ position: {lat:sp.Latitude,lng:sp.Longitude}, content: el });
-    });
-    clustererRef.current = new MarkerClusterer({ map, markers: spotMarkers });
-    markersRef.current.push(...spotMarkers);
-
+const spotMarkers: any[] = spots
+  .filter(sp => !cpSet.has(sp.ID)) // CPは専用マーカーなので重ねない
+  .map(sp => new AdvancedMarker({
+    position: { lat: sp.Latitude, lng: sp.Longitude },
+    content: mkSpotBadge(sp),
+  }));
+clustererRef.current = new MarkerClusterer({
+  map,
+  markers: spotMarkers,
+  renderer: {
+    render: ({ position }) => {
+      return new google.maps.Marker({
+        position,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 10,
+          fillColor: '#333',
+          fillOpacity: 0.85,
+          strokeColor: '#fff',
+          strokeWeight: 2,
+        },
+        // label を出さない（件数非表示）
+        label: undefined as any,
+        zIndex: Number(google.maps.Marker.MAX_ZINDEX) + 1,
+      });
+    },
+  } as any,
+});
   }, [spots, progress]);
 
   const doFix = async () => {
