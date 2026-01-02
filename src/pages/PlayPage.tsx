@@ -91,6 +91,47 @@ export default function PlayPage() {
     const reachedCp = new Set(progress.reachedCpIds);
     const visited = new Set(progress.visitedSpotIds);
 
+    // ----- marker UI helpers -----
+const sizeFill = (sizeClass?: string) => {
+  switch ((sizeClass ?? '').toUpperCase()) {
+    case 'S':  return '#ffffff'; // white
+    case 'M':  return '#bfe6ff'; // light blue
+    case 'L':  return '#bff2a8'; // yellow-green
+    case 'XL': return '#fff3a6'; // yellow
+    default:   return '#ffffff';
+  }
+};
+
+const badgePxByScore = (score: number) => {
+  if (score >= 200) return 36;
+  if (score >= 120) return 32;
+  if (score >= 60)  return 28;
+  if (score >= 30)  return 26;
+  return 24;
+};
+
+const mkCpBadge = (cpIndex: number, reached: boolean) => {
+  const el = document.createElement('div');
+  el.className = `cpBadge${reached ? ' reached' : ''}`;
+  el.textContent = `★CP${cpIndex}`;
+  return el;
+};
+
+const mkSpotBadge = (sp: Spot) => {
+  const el = document.createElement('div');
+  const px = badgePxByScore(sp.Score);
+
+  el.className = `spotBadge${visited.has(sp.ID) ? ' visited' : ''}`;
+  el.style.width = `${px}px`;
+  el.style.height = `${px}px`;
+  el.style.borderRadius = `${Math.round(px / 2)}px`;
+
+  el.style.background = sizeFill(sp.size_class);
+  el.textContent = String(sp.Score);
+  el.title = `${sp.Name} / ${sp.Score}`;
+  return el;
+};
+    
     const mk = (label: string) => {
       const el = document.createElement('div');
       el.style.padding = '6px 8px';
