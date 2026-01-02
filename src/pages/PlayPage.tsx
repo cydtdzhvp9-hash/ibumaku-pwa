@@ -21,6 +21,7 @@ export default function PlayPage() {
 
   const [spots, setSpots] = useState<Spot[]>([]);
   const [stations, setStations] = useState<Station[]>([]);
+  const [checkInBusy, setCheckInBusy] = useState(false);
 
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
@@ -30,6 +31,7 @@ export default function PlayPage() {
 
   // Current location (display + recenter)
   const lastGeoRef = useRef<{ lat: number; lng: number } | null>(null);
+  const lastFixRef = useRef<{ lat: number; lng: number; accuracy: number; ts: number } | null>(null);
   const userMarkerRef = useRef<google.maps.Marker | null>(null);
   const geoWatchIdRef = useRef<number | null>(null);
 
@@ -96,6 +98,7 @@ export default function PlayPage() {
       (pos) => {
         const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         lastGeoRef.current = p;
+        lastFixRef.current = { ...p, accuracy: pos.coords.accuracy ?? 9999, ts: Date.now() };
         upsertUserMarker(map, p);
       },
       () => {
@@ -315,8 +318,17 @@ export default function PlayPage() {
   }, [spots, progress]);
 
   const doFix = async () => {
+    // Prefer cached fix from watchPosition for snappy UI.
+    const cached = lastFixRef.current;
+    if (cached && Date.now() - cached.ts <= 10_000) {
+      return { lat: cached.lat, lng: cached.lng, accuracy: cached.accuracy };
+    }
+
     try {
-      const fix = await getCurrentFix();
+      const fix = await getCurrentFix(12000);
+      // update cache for subsequent actions
+      lastGeoRef.current = { lat: fix.lat, lng: fix.lng };
+      lastFixRef.current = { lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy, ts: Date.now() };
       return fix;
     } catch (e: any) {
       show('位置情報を取得できません。再試行してください。', 3500);
@@ -348,20 +360,38 @@ export default function PlayPage() {
     if (z < 15) map.setZoom(15);
   };
 
-  const doUpdateProgress = async (p: any, msg: string) => {
+  const doUpdateProgress = (p: any, msg: string) => {
+    // UI first, persistence second (IDB write can be slow on mobile).
     setProgress(p);
-    await saveGame(p);
     show(msg, 3500);
+    void saveGame(p).catch(() => {
+      // Avoid spamming users; keep it in console for now.
+      console.warn('saveGame failed');
+    });
   };
 
   const onCheckIn = async () => {
+    if (checkInBusy) return;
     if (!online) return show('オフライン/圏外のためチェックインできません。オンラインで再試行してください。', 4500);
     if (!progress) return;
-    const fix = await doFix();
-    if (!fix) return;
-    const r = checkInSpotOrCp(progress, { lat: fix.lat, lng: fix.lng }, fix.accuracy, spots);
-    if (!r.ok) return show(r.message, 4500);
-    await doUpdateProgress(r.progress, r.message);
+
+    setCheckInBusy(true);
+    // Let React paint the "busy" state before doing any async work.
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+    try {
+      const fix = await doFix();
+      if (!fix) return;
+
+      const r = checkInSpotOrCp(progress, { lat: fix.lat, lng: fix.lng }, fix.accuracy, spots);
+      if (!r.ok) {
+        show(r.message, 4500);
+        return;
+      }
+      doUpdateProgress(r.progress, r.message);
+    } finally {
+      setCheckInBusy(false);
+    }
   };
 
   const onJrBoard = async () => {
@@ -371,7 +401,7 @@ export default function PlayPage() {
     if (!fix) return;
     const r = jrBoard(progress, { lat: fix.lat, lng: fix.lng }, fix.accuracy, stations);
     if (!r.ok) return show(r.message, 4500);
-    await doUpdateProgress(r.progress, r.message);
+    doUpdateProgress(r.progress, r.message);
   };
 
   const onJrAlight = async () => {
@@ -381,7 +411,7 @@ export default function PlayPage() {
     if (!fix) return;
     const r = jrAlight(progress, { lat: fix.lat, lng: fix.lng }, fix.accuracy, stations);
     if (!r.ok) return show(r.message, 4500);
-    await doUpdateProgress(r.progress, r.message);
+    doUpdateProgress(r.progress, r.message);
   };
 
   const onGoal = async () => {
@@ -456,14 +486,16 @@ export default function PlayPage() {
       <div className="card">
         <h3>チェックイン</h3>
         <div className="actions">
-          <button className="btn primary" onClick={onCheckIn}>スポット/CP チェックイン</button>
+          <button className="btn primary" onClick={onCheckIn} disabled={checkInBusy}>
+            {checkInBusy ? 'チェックイン中…' : 'スポット/CP チェックイン'}
+          </button>
           {progress?.config.jrEnabled && (
             <>
-              <button className="btn" onClick={onJrBoard} disabled={cooldownLeft > 0}>乗車チェックイン</button>
-              <button className="btn" onClick={onJrAlight} disabled={cooldownLeft > 0}>降車チェックイン</button>
+              <button className="btn" onClick={onJrBoard} disabled={checkInBusy || cooldownLeft > 0}>乗車チェックイン</button>
+              <button className="btn" onClick={onJrAlight} disabled={checkInBusy || cooldownLeft > 0}>降車チェックイン</button>
             </>
           )}
-          <button className="btn" onClick={onGoal}>ゴールチェックイン</button>
+          <button className="btn" onClick={onGoal} disabled={checkInBusy}>ゴールチェックイン</button>
         </div>
         <div className="hint" style={{ marginTop: 8 }}>
           ・到着判定：50m以内／accuracy≦100m／複数候補時（案A）：最近傍→同率ならScore高→それでも同率ならID昇順
