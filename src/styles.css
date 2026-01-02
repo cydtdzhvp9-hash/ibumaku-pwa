@@ -61,3 +61,43 @@ small.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
   opacity: 0.55;
   text-decoration: line-through;
 }
+
+/* Play HUD (top center) */
+.playHudTop {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  z-index: 6; /* map controlsより上 */
+}
+
+.hudPill {
+  background: rgba(255,255,255,.92);
+  border: 1px solid #ccc;
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-weight: 800;
+  font-size: 13px;
+  box-shadow: 0 1px 2px rgba(0,0,0,.18);
+  white-space: nowrap;
+}
+
+/* Bottom-center "current location" button */
+.currentLocBtn {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 6;
+  background: rgba(255,255,255,.92);
+  border: 1px solid #ccc;
+  border-radius: 999px;
+  padding: 10px 14px;
+  font-weight: 900;
+  box-shadow: 0 1px 2px rgba(0,0,0,.18);
+}
+.currentLocBtn:active { transform: translateX(-50%) scale(0.98); }
+.currentLocBtn:disabled { opacity: .5; }
