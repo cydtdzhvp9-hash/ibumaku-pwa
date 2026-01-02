@@ -27,6 +27,13 @@ export default function PlayPage() {
   const clustererRef = useRef<MarkerClusterer | null>(null);
   const markersRef = useRef<any[]>([]);
 
+  // Map UX
+  const [mapReady, setMapReady] = useState(false);
+  const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
+  const userMarkerRef = useRef<google.maps.Marker | null>(null);
+  const lastGeoRef = useRef<{lat:number; lng:number} | null>(null);
+  const watchIdRef = useRef<number | null>(null);
+
   const [nowMs, setNowMs] = useState(Date.now());
 
   useEffect(() => {
@@ -66,13 +73,111 @@ export default function PlayPage() {
           center,
           zoom: 13,
           mapId: import.meta.env.VITE_GOOGLE_MAP_ID as string,
+          gestureHandling: 'greedy',
         });
         mapRef.current = map;
+        infoWindowRef.current = new google.maps.InfoWindow();
+        setMapReady(true);
       } catch (e: any) {
         show(e?.message ?? String(e), 6000);
       }
     })();
   }, [show, progress]);
+
+  // Watch current position (map only). Check-in still requires online.
+  useEffect(() => {
+    if (!mapReady) return;
+    const map = mapRef.current;
+    if (!map) return;
+
+    // cleanup previous
+    if (watchIdRef.current != null) {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+
+    const upsertUserMarker = (pos: {lat:number; lng:number}) => {
+      if (!userMarkerRef.current) {
+        userMarkerRef.current = new google.maps.Marker({
+          map,
+          position: pos,
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 7,
+            fillColor: '#2b7bff',
+            fillOpacity: 1,
+            strokeColor: '#fff',
+            strokeWeight: 2,
+          },
+          clickable: false,
+        });
+      } else {
+        userMarkerRef.current.setMap(map);
+        userMarkerRef.current.setPosition(pos);
+      }
+    };
+
+    if (!('geolocation' in navigator)) {
+      show('この端末/ブラウザは位置情報に対応していません。', 4500);
+      return;
+    }
+
+    const id = navigator.geolocation.watchPosition(
+      (p) => {
+        const pos = { lat: p.coords.latitude, lng: p.coords.longitude };
+        lastGeoRef.current = pos;
+        upsertUserMarker(pos);
+      },
+      () => {
+        // 権限OFF/取得失敗。チェックイン時に再試行するのでここでは黙っておく。
+      },
+      { enableHighAccuracy: true, maximumAge: 10_000, timeout: 10_000 },
+    );
+    watchIdRef.current = id;
+
+    return () => {
+      if (watchIdRef.current != null) {
+        navigator.geolocation.clearWatch(watchIdRef.current);
+        watchIdRef.current = null;
+      }
+      if (userMarkerRef.current) {
+        userMarkerRef.current.setMap(null);
+      }
+    };
+  }, [mapReady, show]);
+
+  const onPanToCurrent = () => {
+    const map = mapRef.current;
+    const pos = lastGeoRef.current;
+    if (!map || !pos) {
+      show('現在地がまだ取得できていません。位置情報を許可して再試行してください。', 3500);
+      return;
+    }
+    map.panTo(pos);
+    const z = map.getZoom() ?? 13;
+    if (z < 15) map.setZoom(15);
+  };
+
+  const escapeHtml = (s: string) =>
+    s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+  const openInfo = (anchor: any, position: {lat:number; lng:number}, html: string) => {
+    const map = mapRef.current;
+    const iw = infoWindowRef.current;
+    if (!map || !iw) return;
+    iw.setContent(html);
+    try {
+      iw.open({ map, anchor });
+    } catch {
+      iw.setPosition(position);
+      iw.open(map);
+    }
+  };
 
   // render markers when map/spots/progress ready
   useEffect(() => {
@@ -156,21 +261,55 @@ for (let i = 0; i < progress.cpSpotIds.length; i++) {
   if (!sp) continue;
 
   const el = mkCpBadge(i + 1, reachedCp.has(id));
-  cpMarkers.push(new AdvancedMarker({
+  const marker = new AdvancedMarker({
     map,
     position: { lat: sp.Latitude, lng: sp.Longitude },
     content: el,
-  }));
+  });
+  (google.maps as any).event.addListener(marker, 'click', () => {
+    const html = `
+      <div style="min-width:200px">
+        <div style="font-weight:900">★CP${i + 1}</div>
+        <div style="margin-top:4px">${escapeHtml(sp.Name)}</div>
+        <div style="color:#666;font-size:12px;margin-top:2px">Score: ${sp.Score} / ${escapeHtml(sp.Category ?? '')}</div>
+        ${sp.Description ? `<div style="margin-top:6px;color:#333;font-size:12px">${escapeHtml(sp.Description)}</div>` : ''}
+        <div style="margin-top:6px;color:#666;font-size:12px">
+          ${reachedCp.has(id) ? '達成済み' : '未達'}
+        </div>
+      </div>
+    `;
+    openInfo(marker, { lat: sp.Latitude, lng: sp.Longitude }, html);
+  });
+  cpMarkers.push(marker);
 }
 markersRef.current.push(...cpMarkers);
 
     // Spot markers (cluster)
 const spotMarkers: any[] = spots
   .filter(sp => !cpSet.has(sp.ID)) // CPは専用マーカーなので重ねない
-  .map(sp => new AdvancedMarker({
-    position: { lat: sp.Latitude, lng: sp.Longitude },
-    content: mkSpotBadge(sp),
-  }));
+  .map(sp => {
+    const marker = new AdvancedMarker({
+      position: { lat: sp.Latitude, lng: sp.Longitude },
+      content: mkSpotBadge(sp),
+    });
+    (google.maps as any).event.addListener(marker, 'click', () => {
+      const html = `
+        <div style="min-width:220px">
+          <div style="font-weight:900">${escapeHtml(sp.Name)}</div>
+          <div style="margin-top:4px">Score: ${sp.Score}</div>
+          <div style="color:#666;font-size:12px;margin-top:2px">
+            Category: ${escapeHtml(sp.Category ?? '')} / size: ${escapeHtml(sp.size_class ?? '')}
+          </div>
+          ${sp.Description ? `<div style="margin-top:6px;color:#333;font-size:12px">${escapeHtml(sp.Description)}</div>` : ''}
+          <div style="margin-top:6px;color:#666;font-size:12px">
+            ${visited.has(sp.ID) ? '訪問済み' : '未訪問'}
+          </div>
+        </div>
+      `;
+      openInfo(marker, { lat: sp.Latitude, lng: sp.Longitude }, html);
+    });
+    return marker;
+  });
 clustererRef.current = new MarkerClusterer({
   map,
   markers: spotMarkers,
@@ -273,6 +412,14 @@ clustererRef.current = new MarkerClusterer({
         <div className="overlay">
           <div className="pill">残り {mm}:{String(ss).padStart(2,'0')}</div>
           <div className="pill">得点 {progress?.score ?? 0}</div>
+          <button
+            className="pill"
+            onClick={onPanToCurrent}
+            style={{cursor:'pointer', userSelect:'none'}}
+            title="現在地に戻る"
+          >
+            現在地
+          </button>
         </div>
       </div>
 
