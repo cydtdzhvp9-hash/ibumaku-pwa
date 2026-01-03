@@ -12,6 +12,7 @@ import {
   CHECKIN_RADIUS_M,
   JR_COOLDOWN_SEC,
   MAX_ACCURACY_M,
+  calcPenalty,
   checkInSpotOrCp,
   goalCheckIn,
   jrAlight,
@@ -118,6 +119,33 @@ export default function PlayPage() {
     const t = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(t);
   }, []);
+
+  // ===== Finish handling (GOAL / TIME_UP) =====
+  // - endedAtMs が入った時点で「ゲーム終了」扱い。
+  // - 終了済みならプレイ画面に留まらずリザルトへ。
+  useEffect(() => {
+    if (!progress) return;
+    if (progress.endedAtMs) {
+      nav('/result');
+      return;
+    }
+
+    // タイムアップで終了（endedAtMs を plannedEnd に固定して、ドリフトで余計なペナルティが付かないようにする）
+    const plannedEndMs = progress.startedAtMs + progress.config.durationMin * 60_000;
+    if (nowMs >= plannedEndMs) {
+      const endedAtMs = plannedEndMs;
+      const penalty = calcPenalty(progress.startedAtMs, progress.config.durationMin, endedAtMs);
+      const next = {
+        ...progress,
+        endedAtMs,
+        penalty,
+        score: progress.score - penalty,
+      };
+      setProgress(next);
+      void saveGame(next);
+      nav('/result');
+    }
+  }, [nowMs, nav, progress, setProgress]);
 
   // ===== helpers =====
   const normPos = (pos: any): { lat: number; lng: number } | null => {
@@ -849,6 +877,11 @@ export default function PlayPage() {
     if (checkInBusy) return;
     if (!online) return show('オフライン/圏外のためチェックインできません。オンラインで再試行してください。', 4500);
     if (!progress) return;
+    if (progress.endedAtMs) {
+      show('このゲームは終了しています。リザルトを確認してください。', 4500);
+      nav('/result');
+      return;
+    }
 
     setCheckInBusy(true);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -945,6 +978,11 @@ export default function PlayPage() {
     if (checkInBusy) return;
     if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
     if (!progress) return;
+    if (progress.endedAtMs) {
+      show('このゲームは終了しています。リザルトを確認してください。', 4500);
+      nav('/result');
+      return;
+    }
 
     setCheckInBusy(true);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -999,6 +1037,11 @@ export default function PlayPage() {
     if (checkInBusy) return;
     if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
     if (!progress) return;
+    if (progress.endedAtMs) {
+      show('このゲームは終了しています。リザルトを確認してください。', 4500);
+      nav('/result');
+      return;
+    }
 
     setCheckInBusy(true);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -1053,6 +1096,11 @@ export default function PlayPage() {
     if (checkInBusy) return;
     if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
     if (!progress) return;
+    if (progress.endedAtMs) {
+      show('このゲームは終了しています。リザルトを確認してください。', 4500);
+      nav('/result');
+      return;
+    }
 
     setCheckInBusy(true);
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
