@@ -17,7 +17,7 @@ export default function App() {
         <nav style={{display:'flex', gap:10, flexWrap:'wrap'}}>
           <Link to="/" className="btn">ホーム</Link>
           <Link to="/admin/import" className="btn">CSV取込</Link>
-          <Link to="/rules" className="btn">運用ルール</Link>
+          <Link to="/rules" className="btn">ゲームルール</Link>
         </nav>
       </header>
       <div style={{height:12}} />
