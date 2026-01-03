@@ -51,7 +51,18 @@ export type GameProgress = {
   visitedStationEvents: { type: 'BOARD'|'ALIGHT', stationId: string, atMs: number }[];
   boardedStationId?: string;
   cooldownUntilMs?: number;
-  usedStationIds: string[]; // no board/alight at same station (global)
+  /**
+   * Stations that have already been scored in this game.
+   * - For newly created games, this is kept in `scoredStationIds`.
+   * - `usedStationIds` is retained for backward compatibility with older saved data.
+   */
+  scoredStationIds?: string[];
+  /**
+   * Backward compatible storage for station scoring.
+   * Historically this was used to prohibit re-boarding/alighting at the same station.
+   * Now it mirrors `scoredStationIds` and is used as a fallback when loading older data.
+   */
+  usedStationIds: string[];
   score: number;
   penalty: number;
   endedAtMs?: number;
