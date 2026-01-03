@@ -3,11 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import { attachMap, parkMap } from '../map/mapSingleton';
 import { getJudgeTargetSpots, getStationsByOrder, loadGame, saveGame } from '../db/repo';
 import type { Spot, Station } from '../types';
+import { haversineMeters } from '../utils/geo';
 import { useGameStore } from '../store/gameStore';
 import { useToast } from '../hooks/useToast';
 import { useOnline } from '../hooks/useOnline';
 import { getCurrentFix } from '../logic/location';
-import { checkInSpotOrCp, goalCheckIn, jrAlight, jrBoard } from '../logic/game';
+import { CHECKIN_RADIUS_M, JR_COOLDOWN_SEC, MAX_ACCURACY_M, checkInSpotOrCp, goalCheckIn, jrAlight, jrBoard } from '../logic/game';
 import { MarkerClusterer } from '@googlemaps/markerclusterer';
 
 export default function PlayPage() {
@@ -34,26 +35,72 @@ export default function PlayPage() {
       if (!raw) return;
       const arr = JSON.parse(raw);
       if (Array.isArray(arr)) {
-        everVisitedSpotIdsRef.current = new Set(arr.map((v) => String(v)));
+        everVisitedSpotIdsRef.current = new Set(arr.filter(x => typeof x === 'string'));
       }
     } catch {
-      // noop
+      // ignore
     }
   };
 
-  const persistEverVisitedSpots = () => {
+  const saveEverVisitedSpots = () => {
     try {
-      const arr = Array.from(everVisitedSpotIdsRef.current.values());
+      const arr = Array.from(everVisitedSpotIdsRef.current);
       localStorage.setItem(EVER_VISITED_SPOT_KEY, JSON.stringify(arr));
     } catch {
-      // noop
+      // ignore
     }
   };
+
+  useEffect(() => {
+    loadEverVisitedSpots();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Debug tools & event log (off by default in prod).
+  const DEBUG_TOOLS = useMemo(() => {
+    const q = new URLSearchParams(window.location.search);
+    const enabledByQuery = q.get('debug') === '1';
+    const gate = (import.meta.env.VITE_DEBUG_TOOLS as string | undefined) ?? '1';
+    return gate !== '0' && (import.meta.env.DEV || enabledByQuery);
+  }, []);
+
+  useEffect(() => {
+    useVirtualRef.current = useVirtualLoc;
+  }, [useVirtualLoc]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!DEBUG_TOOLS || !map) return;
+    if (useVirtualLoc) ensureVirtualMarker(map);
+    else disableVirtualMarker();
+  }, [DEBUG_TOOLS, useVirtualLoc]);
+
+
+  type LogEntry = { atMs: number; type: string; message: string; data?: any };
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+  const pushLog = (type: string, message: string, data?: any) => {
+    if (!DEBUG_TOOLS) return;
+    const entry: LogEntry = { atMs: Date.now(), type, message, data };
+    setLogs(prev => [entry, ...prev].slice(0, 400));
+    // Keep in console for copy/paste during field tests.
+    // eslint-disable-next-line no-console
+    console.log('[DBG]', type, message, data ?? '');
+  };
+
+  const [useVirtualLoc, setUseVirtualLoc] = useState(false);
+  const [debugOpen, setDebugOpen] = useState(false);
+  const useVirtualRef = useRef(false);
+  const virtualFixRef = useRef<{ lat: number; lng: number; accuracy: number } | null>(null);
+  const virtualMarkerRef = useRef<any>(null);
+  const mapClickListenerRef = useRef<google.maps.MapsEventListener | null>(null);
+
 
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
   const clustererRef = useRef<MarkerClusterer | null>(null);
   const markersRef = useRef<any[]>([]);
+  const cpDragListenersRef = useRef<any[]>([]);
+
   const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
 
   // Current location (display + recenter)
@@ -67,11 +114,6 @@ export default function PlayPage() {
   useEffect(() => {
     const t = window.setInterval(() => setNowMs(Date.now()), 1000);
     return () => window.clearInterval(t);
-  }, []);
-
-
-  useEffect(() => {
-    loadEverVisitedSpots();
   }, []);
 
   useEffect(() => {
@@ -128,6 +170,7 @@ export default function PlayPage() {
     // watch current location for display + quick recenter
     geoWatchIdRef.current = navigator.geolocation.watchPosition(
       (pos) => {
+        if (useVirtualRef.current) return; // keep virtual location stable
         const p = { lat: pos.coords.latitude, lng: pos.coords.longitude };
         lastGeoRef.current = p;
         lastFixRef.current = { ...p, accuracy: pos.coords.accuracy ?? 9999, ts: Date.now() };
@@ -160,6 +203,7 @@ export default function PlayPage() {
         if (!infoWindowRef.current) infoWindowRef.current = new google.maps.InfoWindow();
 
         startGeoWatch(map);
+        if (DEBUG_TOOLS && useVirtualRef.current) ensureVirtualMarker(map);
       } catch (e: any) {
         show(e?.message ?? String(e), 6000);
       }
@@ -186,6 +230,7 @@ export default function PlayPage() {
       try { infoWindowRef.current?.close(); } catch { /* noop */ }
 
       // Keep the single map instance alive across routes.
+      disableVirtualMarker();
       parkMap();
     };
   }, [show, progress]);
@@ -220,6 +265,8 @@ export default function PlayPage() {
     };
 
     // clear previous
+    for (const l of cpDragListenersRef.current) { try { l?.remove?.(); } catch { /* noop */ } }
+    cpDragListenersRef.current = [];
     for (const m of markersRef.current) { m.map = null; }
     markersRef.current = [];
     clustererRef.current?.clearMarkers();
@@ -228,7 +275,6 @@ export default function PlayPage() {
     const cpSet = new Set(progress.cpSpotIds);
     const reachedCp = new Set(progress.reachedCpIds);
     const visited = new Set(progress.visitedSpotIds);
-    const everVisited = everVisitedSpotIdsRef.current;
 
     // ----- marker UI helpers -----
     const sizeFill = (sizeClass?: string) => {
@@ -256,15 +302,19 @@ export default function PlayPage() {
       return el;
     };
 
-    const mkSpotBadge = (sp: Spot) => {
+    
+const mkSpotBadge = (sp: Spot) => {
       const px = badgePxByScore(sp.Score);
+      const visitedThisGame = visited.has(sp.ID);
+      const everVisited = everVisitedSpotIdsRef.current;
+
       const wrap = document.createElement('div');
       wrap.style.position = 'relative';
       wrap.style.width = `${px}px`;
       wrap.style.height = `${px}px`;
 
-      // そのゲーム中にチェックインしたスポットは 🚩 表示（次回ゲームでは progress.visitedSpotIds がリセットされるので元に戻る）
-      if (visited.has(sp.ID)) {
+      // 今回ゲーム内でチェックインしたスポットは 🚩（次回ゲームでは progress.visitedSpotIds がリセットされるので元に戻る）
+      if (visitedThisGame) {
         const el = document.createElement('div');
         el.className = 'spotFlag';
         el.style.width = `${px}px`;
@@ -282,7 +332,6 @@ export default function PlayPage() {
         return wrap;
       }
 
-      // 未訪問（このゲーム内）スポットはスコアバッジ。過去に一度でも訪問済みなら右上に ⭐️ を付与。
       const el = document.createElement('div');
       el.className = 'spotBadge';
       el.style.width = `${px}px`;
@@ -293,6 +342,7 @@ export default function PlayPage() {
       el.title = `${sp.Name} / ${sp.Score}`;
       wrap.appendChild(el);
 
+      // 過去に一度でも訪れたことがあるスポットには小さい⭐️を右上につける（永続）
       if (everVisited.has(sp.ID)) {
         const star = document.createElement('div');
         star.textContent = '⭐️';
@@ -304,8 +354,10 @@ export default function PlayPage() {
         star.style.pointerEvents = 'none';
         wrap.appendChild(star);
       }
+
       return wrap;
     };
+
 
     const mk = (label: string) => {
       const el = document.createElement('div');
@@ -351,6 +403,65 @@ export default function PlayPage() {
       try { m.addListener('gmp-click', onClick); } catch { /* noop */ }
       try { m.addListener('click', onClick); } catch { /* noop */ }
 
+
+if (DEBUG_TOOLS) {
+  try { (m as any).gmpDraggable = true; } catch { /* noop */ }
+
+  const prevId = id;
+  const prevPos = { lat: sp.Latitude, lng: sp.Longitude };
+
+  const onDragEnd = () => {
+    const p2 = normPos((m as any).position);
+    if (!p2) return;
+
+    // Snap to nearest judge spot to keep CPs stable/reproducible.
+    let best: { sp: Spot; d: number } | null = null;
+    for (const s of spots) {
+      const d = haversineMeters(p2, { lat: s.Latitude, lng: s.Longitude });
+      if (!best || d < best.d) best = { sp: s, d };
+    }
+    if (!best || best.d > 300) {
+      // Too far from any spot: revert for now.
+      try { (m as any).position = prevPos; } catch { /* noop */ }
+      pushLog('CP_DRAG_REVERT', `★CP${i + 1} drag too far -> revert`, { lat: p2.lat, lng: p2.lng, nearestM: best ? Math.round(best.d) : null });
+      show('近くにスポットがないためCPを移動できません（300m以内が必要）', 3500);
+      return;
+    }
+
+    // Prevent duplicates across CPs.
+    if (progress.cpSpotIds.some((x, idx) => idx !== i && x === best!.sp.ID)) {
+      try { (m as any).position = prevPos; } catch { /* noop */ }
+      pushLog('CP_DRAG_DUP', `★CP${i + 1} duplicate -> revert`, { targetId: best!.sp.ID, name: best!.sp.Name });
+      show('そのスポットは既に別のCPに設定されています', 3500);
+      return;
+    }
+
+    // Apply + snap
+    const newIds = [...progress.cpSpotIds];
+    newIds[i] = best!.sp.ID;
+    const newP = { ...progress, cpSpotIds: newIds };
+
+    try { (m as any).position = { lat: best!.sp.Latitude, lng: best!.sp.Longitude }; } catch { /* noop */ }
+
+    applyProgressUpdate(newP, `★CP${i + 1} を移動しました`, 'CP_DRAG', {
+      fromId: prevId,
+      toId: best!.sp.ID,
+      toName: best!.sp.Name,
+      movedToDistM: Math.round(best!.d),
+    });
+  };
+
+  try {
+    const l1 = (m as any).addListener?.('gmp-dragend', onDragEnd);
+    if (l1) cpDragListenersRef.current.push(l1);
+  } catch { /* noop */ }
+
+  try {
+    const l2 = (m as any).addListener?.('dragend', onDragEnd);
+    if (l2) cpDragListenersRef.current.push(l2);
+  } catch { /* noop */ }
+}
+
       cpMarkers.push(m);
     }
     markersRef.current.push(...cpMarkers);
@@ -383,7 +494,7 @@ export default function PlayPage() {
       map,
       markers: spotMarkers,
       renderer: {
-        render: ({ position }: { position: google.maps.LatLngLiteral }) => {
+        render: ({ position }) => {
           return new google.maps.Marker({
             position,
             icon: {
@@ -408,6 +519,14 @@ export default function PlayPage() {
     const cached = lastFixRef.current;
     if (cached && Date.now() - cached.ts <= 10_000) {
       return { lat: cached.lat, lng: cached.lng, accuracy: cached.accuracy };
+    if (useVirtualRef.current && virtualFixRef.current) {
+      const v = virtualFixRef.current;
+      // keep caches consistent
+      lastGeoRef.current = { lat: v.lat, lng: v.lng };
+      lastFixRef.current = { lat: v.lat, lng: v.lng, accuracy: v.accuracy, ts: Date.now() };
+      return { lat: v.lat, lng: v.lng, accuracy: v.accuracy };
+    }
+
     }
 
     try {
@@ -420,6 +539,114 @@ export default function PlayPage() {
       show('位置情報を取得できません。再試行してください。', 3500);
       return null;
     }
+  const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: any) => {
+    setProgress(p);
+    show(msg, 3500);
+    if (logType) pushLog(logType, msg, logData);
+    void saveGame(p).catch(() => {
+      // Avoid spamming users; keep it in console for now.
+      // eslint-disable-next-line no-console
+      console.warn('saveGame failed');
+    });
+  };
+
+  const normPos = (pos: any): { lat: number; lng: number } | null => {
+    if (!pos) return null;
+    if (typeof pos.lat === 'function' && typeof pos.lng === 'function') return { lat: pos.lat(), lng: pos.lng() };
+    if (typeof pos.lat === 'number' && typeof pos.lng === 'number') return { lat: pos.lat, lng: pos.lng };
+    if (pos.latLng && typeof pos.latLng.lat === 'function') return { lat: pos.latLng.lat(), lng: pos.latLng.lng() };
+    return null;
+  };
+
+  const setVirtualFix = (lat: number, lng: number, accuracy = 5, reason = 'manual') => {
+    virtualFixRef.current = { lat, lng, accuracy };
+    lastGeoRef.current = { lat, lng };
+    lastFixRef.current = { lat, lng, accuracy, ts: Date.now() };
+    const map = mapRef.current;
+    if (map) upsertUserMarker(map, { lat, lng });
+
+    const m = virtualMarkerRef.current;
+    try {
+      if (m) m.position = { lat, lng };
+    } catch {
+      try { m?.setPosition?.({ lat, lng }); } catch { /* noop */ }
+    }
+    pushLog('VLOC_SET', `virtual location set (${reason})`, { lat, lng, accuracy });
+  };
+
+  const ensureVirtualMarker = (map: google.maps.Map) => {
+    if (!DEBUG_TOOLS || !useVirtualRef.current) return;
+
+    const AdvancedMarker = (google.maps as any).marker?.AdvancedMarkerElement;
+    if (!virtualFixRef.current) {
+      const c = map.getCenter();
+      const lat = c?.lat() ?? (lastFixRef.current?.lat ?? 31.2);
+      const lng = c?.lng() ?? (lastFixRef.current?.lng ?? 130.5);
+      virtualFixRef.current = { lat, lng, accuracy: 5 };
+    }
+
+    const v = virtualFixRef.current!;
+    if (!virtualMarkerRef.current) {
+      if (AdvancedMarker) {
+        const el = document.createElement('div');
+        el.style.padding = '4px 6px';
+        el.style.borderRadius = '8px';
+        el.style.border = '2px solid #ff2d55';
+        el.style.background = 'rgba(255,255,255,.95)';
+        el.style.fontWeight = '900';
+        el.style.fontSize = '12px';
+        el.textContent = 'VLOC';
+        const m = new AdvancedMarker({ map, position: { lat: v.lat, lng: v.lng }, content: el });
+        try { m.gmpDraggable = true; } catch { /* noop */ }
+
+        const onEnd = () => {
+          const p = normPos(m.position);
+          if (!p) return;
+          setVirtualFix(p.lat, p.lng, virtualFixRef.current?.accuracy ?? 5, 'drag');
+        };
+        try { (m as any).addListener?.('gmp-dragend', onEnd); } catch { /* noop */ }
+        try { (m as any).addListener?.('dragend', onEnd); } catch { /* noop */ }
+
+        virtualMarkerRef.current = m;
+      } else {
+        const m = new google.maps.Marker({ map, position: { lat: v.lat, lng: v.lng }, draggable: true, label: 'V' });
+        m.addListener('dragend', () => {
+          const p = m.getPosition();
+          if (!p) return;
+          setVirtualFix(p.lat(), p.lng(), virtualFixRef.current?.accuracy ?? 5, 'drag');
+        });
+        virtualMarkerRef.current = m;
+      }
+    } else {
+      // ensure visible on this map
+      try { virtualMarkerRef.current.map = map; } catch { /* noop */ }
+      try { virtualMarkerRef.current.setMap?.(map); } catch { /* noop */ }
+      try { virtualMarkerRef.current.position = { lat: v.lat, lng: v.lng }; } catch { /* noop */ }
+      try { virtualMarkerRef.current.setPosition?.({ lat: v.lat, lng: v.lng }); } catch { /* noop */ }
+    }
+
+    // map click to place virtual location
+    if (!mapClickListenerRef.current) {
+      mapClickListenerRef.current = map.addListener('click', (e: any) => {
+        if (!useVirtualRef.current) return;
+        const ll = e?.latLng;
+        if (!ll) return;
+        setVirtualFix(ll.lat(), ll.lng(), virtualFixRef.current?.accuracy ?? 5, 'map-click');
+      });
+    }
+  };
+
+  const disableVirtualMarker = () => {
+    // remove map click listener
+    try { mapClickListenerRef.current?.remove(); } catch { /* noop */ }
+    mapClickListenerRef.current = null;
+    // hide marker (keep instance for quick re-enable)
+    const m = virtualMarkerRef.current;
+    try { m.map = null; } catch { /* noop */ }
+    try { m.setMap?.(null); } catch { /* noop */ }
+  };
+
+
   };
 
   const onPanToCurrent = async () => {
@@ -446,88 +673,320 @@ export default function PlayPage() {
     if (z < 15) map.setZoom(15);
   };
 
-  const doUpdateProgress = (p: any, msg: string) => {
-    // UI first, persistence second (IDB write can be slow on mobile).
-    setProgress(p);
-    show(msg, 3500);
-    void saveGame(p).catch(() => {
-      // Avoid spamming users; keep it in console for now.
-      console.warn('saveGame failed');
-    });
-  };
+
+// ===== Debug helpers =====
+const debugSetVirtualFromCurrent = async () => {
+  const map = mapRef.current;
+  if (!map) return;
+
+  // Try to use current fix (real) even if virtual is enabled.
+  try {
+    const fix = await getCurrentFix(6000);
+    setVirtualFix(fix.lat, fix.lng, Math.max(5, Math.round(fix.accuracy || 5)), 'from-current');
+    show('DBG: 仮想現在地を現在地に設定しました', 2500);
+  } catch {
+    const c = map.getCenter();
+    if (!c) return;
+    setVirtualFix(c.lat(), c.lng(), 5, 'from-center');
+    show('DBG: 仮想現在地を地図中心に設定しました', 2500);
+  }
+};
+
+const debugShiftTimerMin = (deltaMin: number) => {
+  if (!progress) return;
+  const now = Date.now();
+  let newStart = progress.startedAtMs + deltaMin * 60_000;
+  // Avoid "future start" which breaks elapsed calc.
+  if (newStart > now) newStart = now;
+  const newP = { ...progress, startedAtMs: newStart };
+  applyProgressUpdate(newP, `DBG: タイマー調整 ${deltaMin >= 0 ? '+' : ''}${deltaMin}分`, 'TIMER_SHIFT', { deltaMin });
+};
+
+const debugSetRemainingMin = (remainMin: number) => {
+  if (!progress) return;
+  const now = Date.now();
+  const durationSec = Math.max(0, Math.round((progress.config?.durationMin ?? 0) * 60));
+  const remainSec = Math.max(0, Math.min(durationSec, Math.round(remainMin * 60)));
+  const elapsedTargetSec = Math.max(0, durationSec - remainSec);
+  let newStart = now - elapsedTargetSec * 1000;
+  // Clamp to [now - duration, now]
+  const minStart = now - durationSec * 1000;
+  if (newStart < minStart) newStart = minStart;
+  if (newStart > now) newStart = now;
+
+  const newP = { ...progress, startedAtMs: newStart };
+  applyProgressUpdate(newP, `DBG: 残り時間を${remainMin}分に設定`, 'TIMER_SET', { remainMin });
+};
+
+  // (moved) progress update helper is applyProgressUpdate
 
   const onCheckIn = async () => {
-    if (checkInBusy) return;
-    if (!online) return show('オフライン/圏外のためチェックインできません。オンラインで再試行してください。', 4500);
-    if (!progress) return;
+  if (checkInBusy) return;
+  if (!online) return show('オフライン/圏外のためチェックインできません。オンラインで再試行してください。', 4500);
+  if (!progress) return;
 
-    setCheckInBusy(true);
-    // Let React paint the "busy" state before doing any async work.
-    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+  setCheckInBusy(true);
+  // Let React paint the "busy" state before doing any async work.
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
 
-    try {
-      const fix = await doFix();
-      if (!fix) return;
+  try {
+    const fix = await doFix();
+    if (!fix) return;
 
-      const prevVisited = new Set(progress.visitedSpotIds);
-      const r = checkInSpotOrCp(progress, { lat: fix.lat, lng: fix.lng }, fix.accuracy, spots);
-      if (!r.ok) {
-        show(r.message, 4500);
-        return;
+    const loc = { lat: fix.lat, lng: fix.lng };
+
+    let candidateTop: any[] | undefined;
+    let chosenCandidate: any | undefined;
+
+    if (DEBUG_TOOLS) {
+      const cands = spots
+        .map(s => ({ s, d: haversineMeters(loc, { lat: s.Latitude, lng: s.Longitude }) }))
+        .filter(x => x.d <= CHECKIN_RADIUS_M)
+        .sort((a, b) => (a.d - b.d) || (b.s.Score - a.s.Score) || a.s.ID.localeCompare(b.s.ID));
+
+      candidateTop = cands.slice(0, 3).map(x => ({
+        id: x.s.ID,
+        name: x.s.Name,
+        score: x.s.Score,
+        distM: Math.round(x.d),
+      }));
+
+      if (cands[0]) {
+        chosenCandidate = {
+          id: cands[0].s.ID,
+          name: cands[0].s.Name,
+          score: cands[0].s.Score,
+          distM: Math.round(cands[0].d),
+          isCp: progress.cpSpotIds.includes(cands[0].s.ID),
+        };
       }
-      // Persist "ever visited" spot ids (⭐️ marker)
-      try {
-        const nextVisited = new Set(r.progress.visitedSpotIds);
-        let changed = false;
-        for (const id of nextVisited) {
-          if (!prevVisited.has(id)) {
-            if (!everVisitedSpotIdsRef.current.has(id)) {
-              everVisitedSpotIdsRef.current.add(id);
-              changed = true;
-            }
-          }
-        }
-        if (changed) persistEverVisitedSpots();
-      } catch { /* noop */ }
 
-      doUpdateProgress(r.progress, r.message);
-    } finally {
-      setCheckInBusy(false);
+      pushLog('CHECKIN_ATTEMPT', 'spot/cp check-in', {
+        loc,
+        accuracy: fix.accuracy,
+        radiusM: CHECKIN_RADIUS_M,
+        candidateTop,
+      });
     }
-  };
+
+    const before = progress;
+    const r = checkInSpotOrCp(progress, loc, fix.accuracy, spots);
+
+    if (!r.ok) {
+      const cdLeft = before.cooldownUntilMs ? Math.max(0, Math.ceil((before.cooldownUntilMs - Date.now()) / 1000)) : 0;
+      pushLog('CHECKIN_FAIL', r.message, {
+        code: r.code,
+        loc,
+        accuracy: fix.accuracy,
+        radiusM: CHECKIN_RADIUS_M,
+        maxAccuracyM: MAX_ACCURACY_M,
+        candidateTop,
+        chosenCandidate,
+        cooldownLeftSec: cdLeft,
+      });
+      show(r.message, 4500);
+      return;
+    }
+
+    const after = r.progress as any;
+    pushLog('CHECKIN_OK', r.message, {
+      kind: (r as any).kind,
+      loc,
+      accuracy: fix.accuracy,
+      radiusM: CHECKIN_RADIUS_M,
+      chosenCandidate,
+      scoreDelta: (after.score ?? 0) - (before.score ?? 0),
+      penaltyDelta: (after.penalty ?? 0) - (before.penalty ?? 0),
+      newScore: after.score,
+      newPenalty: after.penalty,
+      cooldownLeftSec: after.cooldownUntilMs ? Math.max(0, Math.ceil((after.cooldownUntilMs - Date.now()) / 1000)) : 0,
+    });
+
+
+    // 永続の「過去訪問⭐️」セットを更新（今回新規に訪れたスポットIDのみ追加）
+    try {
+      const beforeSet = new Set((before as any).visitedSpotIds ?? []);
+      const afterIds: string[] = ((after as any).visitedSpotIds ?? []) as any;
+      const added = afterIds.filter(id => !beforeSet.has(id));
+      if (added.length) {
+        const ever = everVisitedSpotIdsRef.current;
+        for (const id of added) ever.add(id);
+        saveEverVisitedSpots();
+      }
+    } catch {
+      // ignore
+    }
+    applyProgressUpdate(r.progress, r.message);
+  } finally {
+    setCheckInBusy(false);
+  }
+};
 
   const onJrBoard = async () => {
-    if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
-    if (!progress) return;
+  if (checkInBusy) return;
+  if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
+  if (!progress) return;
+
+  setCheckInBusy(true);
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+  try {
     const fix = await doFix();
     if (!fix) return;
-    const r = jrBoard(progress, { lat: fix.lat, lng: fix.lng }, fix.accuracy, stations);
-    if (!r.ok) return show(r.message, 4500);
-    doUpdateProgress(r.progress, r.message);
-  };
+
+    const loc = { lat: fix.lat, lng: fix.lng };
+
+    let candTop: any[] | undefined;
+    let chosen: any | undefined;
+    if (DEBUG_TOOLS) {
+      const cands = stations
+        .map(st => ({ st, d: haversineMeters(loc, { lat: st.lat, lng: st.lng }) }))
+        .filter(x => x.d <= CHECKIN_RADIUS_M)
+        .sort((a, b) => (a.d - b.d) || a.st.stationId.localeCompare(b.st.stationId));
+
+      candTop = cands.slice(0, 3).map(x => ({
+        stationId: x.st.stationId,
+        name: x.st.name,
+        distM: Math.round(x.d),
+      }));
+      if (cands[0]) chosen = { stationId: cands[0].st.stationId, name: cands[0].st.name, distM: Math.round(cands[0].d) };
+
+      pushLog('JR_BOARD_ATTEMPT', 'JR 乗車チェックイン', {
+        loc,
+        accuracy: fix.accuracy,
+        radiusM: CHECKIN_RADIUS_M,
+        candidateTop: candTop,
+        cooldownSec: JR_COOLDOWN_SEC,
+      });
+    }
+
+    const before = progress;
+    const r = jrBoard(progress, loc, fix.accuracy, stations);
+
+    if (!r.ok) {
+      const cdLeft = before.cooldownUntilMs ? Math.max(0, Math.ceil((before.cooldownUntilMs - Date.now()) / 1000)) : 0;
+      pushLog('JR_BOARD_FAIL', r.message, { code: r.code, chosen, candidateTop: candTop, cooldownLeftSec: cdLeft });
+      show(r.message, 4500);
+      return;
+    }
+
+    const after = r.progress as any;
+    pushLog('JR_BOARD_OK', r.message, {
+      chosen,
+      scoreDelta: (after.score ?? 0) - (before.score ?? 0),
+      penaltyDelta: (after.penalty ?? 0) - (before.penalty ?? 0),
+      cooldownLeftSec: after.cooldownUntilMs ? Math.max(0, Math.ceil((after.cooldownUntilMs - Date.now()) / 1000)) : 0,
+    });
+
+    applyProgressUpdate(r.progress, r.message);
+  } finally {
+    setCheckInBusy(false);
+  }
+};
 
   const onJrAlight = async () => {
-    if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
-    if (!progress) return;
+  if (checkInBusy) return;
+  if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
+  if (!progress) return;
+
+  setCheckInBusy(true);
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+  try {
     const fix = await doFix();
     if (!fix) return;
-    const r = jrAlight(progress, { lat: fix.lat, lng: fix.lng }, fix.accuracy, stations);
-    if (!r.ok) return show(r.message, 4500);
-    doUpdateProgress(r.progress, r.message);
-  };
+
+    const loc = { lat: fix.lat, lng: fix.lng };
+
+    let candTop: any[] | undefined;
+    let chosen: any | undefined;
+    if (DEBUG_TOOLS) {
+      const cands = stations
+        .map(st => ({ st, d: haversineMeters(loc, { lat: st.lat, lng: st.lng }) }))
+        .filter(x => x.d <= CHECKIN_RADIUS_M)
+        .sort((a, b) => (a.d - b.d) || a.st.stationId.localeCompare(b.st.stationId));
+
+      candTop = cands.slice(0, 3).map(x => ({
+        stationId: x.st.stationId,
+        name: x.st.name,
+        distM: Math.round(x.d),
+      }));
+      if (cands[0]) chosen = { stationId: cands[0].st.stationId, name: cands[0].st.name, distM: Math.round(cands[0].d) };
+
+      pushLog('JR_ALIGHT_ATTEMPT', 'JR 降車チェックイン', {
+        loc,
+        accuracy: fix.accuracy,
+        radiusM: CHECKIN_RADIUS_M,
+        candidateTop: candTop,
+        cooldownSec: JR_COOLDOWN_SEC,
+      });
+    }
+
+    const before = progress;
+    const r = jrAlight(progress, loc, fix.accuracy, stations);
+
+    if (!r.ok) {
+      const cdLeft = before.cooldownUntilMs ? Math.max(0, Math.ceil((before.cooldownUntilMs - Date.now()) / 1000)) : 0;
+      pushLog('JR_ALIGHT_FAIL', r.message, { code: r.code, chosen, candidateTop: candTop, cooldownLeftSec: cdLeft });
+      show(r.message, 4500);
+      return;
+    }
+
+    const after = r.progress as any;
+    pushLog('JR_ALIGHT_OK', r.message, {
+      chosen,
+      scoreDelta: (after.score ?? 0) - (before.score ?? 0),
+      penaltyDelta: (after.penalty ?? 0) - (before.penalty ?? 0),
+      cooldownLeftSec: after.cooldownUntilMs ? Math.max(0, Math.ceil((after.cooldownUntilMs - Date.now()) / 1000)) : 0,
+    });
+
+    applyProgressUpdate(r.progress, r.message);
+  } finally {
+    setCheckInBusy(false);
+  }
+};
 
   const onGoal = async () => {
-    if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
-    if (!progress) return;
+  if (checkInBusy) return;
+  if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
+  if (!progress) return;
+
+  setCheckInBusy(true);
+  await new Promise<void>((r) => requestAnimationFrame(() => r()));
+
+  try {
     const fix = await doFix();
     if (!fix) return;
-    const r = goalCheckIn(progress, { lat: fix.lat, lng: fix.lng }, fix.accuracy);
-    if (!r.ok) return show(r.message, 4500);
-    await saveGame(r.progress);
+
+    const loc = { lat: fix.lat, lng: fix.lng };
+
+    const before = progress;
+    const r = goalCheckIn(progress, loc, fix.accuracy);
+
+    if (!r.ok) {
+      pushLog('GOAL_FAIL', r.message, { code: r.code, loc, accuracy: fix.accuracy, radiusM: CHECKIN_RADIUS_M });
+      show(r.message, 4500);
+      return;
+    }
+
+    const after = r.progress as any;
+    pushLog('GOAL_OK', r.message, {
+      loc,
+      accuracy: fix.accuracy,
+      radiusM: CHECKIN_RADIUS_M,
+      scoreDelta: (after.score ?? 0) - (before.score ?? 0),
+      penaltyDelta: (after.penalty ?? 0) - (before.penalty ?? 0),
+      finalScore: after.score,
+      finalPenalty: after.penalty,
+    });
+
     setProgress(r.progress);
-    show(r.message, 2000);
+    await saveGame(r.progress);
     nav('/result');
-  };
+  } finally {
+    setCheckInBusy(false);
+  }
+};
 
   const rem = progress ? remainingSec(nowMs) : 0;
   const mm = Math.floor(rem / 60);
