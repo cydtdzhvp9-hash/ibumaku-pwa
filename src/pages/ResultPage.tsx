@@ -21,11 +21,19 @@ export default function ResultPage() {
 
   if (!loaded || !progress) return <div className="card">読込中...</div>;
 
+  const reachedCpSet = new Set(progress.reachedCpIds);
+  const missingCpCount = progress.cpSpotIds.filter(id => !reachedCpSet.has(id)).length;
+  const cpPenalty = missingCpCount * 100;
+  const timePenalty = progress.endedAtMs
+    ? calcPenalty(progress.startedAtMs, progress.config.durationMin, progress.endedAtMs)
+    : 0;
+
   return (
     <div className="card">
       <h3>リザルト</h3>
       <div>スコア：<b>{progress.score}</b></div>
       <div>ペナルティ：{progress.penalty}</div>
+      <div className="hint">内訳：時間{timePenalty}点{cpPenalty>0 ? ` / CP未達${cpPenalty}点（未達${missingCpCount}）` : ''}</div>
       <div className="hint">※ペナルティ：早着（終了15分以上前）/遅刻は、秒を切り捨てて分換算し、1分=1点で減点。</div>
       <hr />
       <div>訪問スポット数：{progress.visitedSpotIds.length}</div>
