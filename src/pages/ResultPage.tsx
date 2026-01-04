@@ -13,6 +13,7 @@ export default function ResultPage() {
     (async () => {
       const g = progress ?? await loadGame();
       if (!g || !g.endedAtMs) { nav('/'); return; }
+      if ((g as any).endReason === 'ABANDONED') { nav('/'); return; }
       setProgress(g);
       setLoaded(true);
     })();
