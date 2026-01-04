@@ -52,19 +52,19 @@ export type GameProgress = {
   boardedStationId?: string;
   cooldownUntilMs?: number;
   /**
-   * Stations that have already been scored in this game.
-   * - For newly created games, this is kept in `scoredStationIds`.
-   * - `usedStationIds` is retained for backward compatibility with older saved data.
-   */
-  scoredStationIds?: string[];
-  /**
-   * Backward compatible storage for station scoring.
-   * Historically this was used to prohibit re-boarding/alighting at the same station.
-   * Now it mirrors `scoredStationIds` and is used as a fallback when loading older data.
+   * legacy field (v1): previously used to globally block reusing stations for board/alight.
+   * kept for backward compatibility; current rules allow reusing stations.
    */
   usedStationIds: string[];
+
+  /**
+   * Stations that have already been scored in this game.
+   * Station points are added at most once per stationId per game.
+   */
+  scoredStationIds?: string[];
   score: number;
   penalty: number;
   endedAtMs?: number;
+  endReason?: 'GOAL' | 'ABANDONED';
   lastLocation?: { lat: number; lng: number; accuracy: number; atMs: number };
 };
