@@ -237,7 +237,11 @@ export function goalCheckIn(progress: GameProgress, loc: LatLng, accuracy: numbe
   const d = haversineMeters(loc, progress.config.goal);
   if (d > CHECKIN_RADIUS_M) return { ok:false, code:'NOT_AT_GOAL', message:'ゴール地点の50m以内でチェックインしてください。' };
 
-  const penalty = calcPenalty(progress.startedAtMs, progress.config.durationMin, t);
+  const timePenalty = calcPenalty(progress.startedAtMs, progress.config.durationMin, t);
+  const reachedCp = new Set(progress.reachedCpIds);
+  const cpPenalty = Math.max(0, progress.cpSpotIds.length - reachedCp.size) * 100;
+  const penalty = timePenalty + cpPenalty;
+
   const next: GameProgress = {
     ...progress,
     endedAtMs: t,
@@ -246,5 +250,7 @@ export function goalCheckIn(progress: GameProgress, loc: LatLng, accuracy: numbe
     score: progress.score - penalty,
     lastLocation: { lat: loc.lat, lng: loc.lng, accuracy, atMs: t }
   };
-  return { ok:true, kind:'GOAL', message:`ゴール！ペナルティ${penalty}点`, progress: next };
+
+  const cpMsg = cpPenalty > 0 ? `（CP未達-${cpPenalty}点）` : '';
+  return { ok:true, kind:'GOAL', message:`ゴール！ペナルティ${penalty}点${cpMsg}`, progress: next };
 }
