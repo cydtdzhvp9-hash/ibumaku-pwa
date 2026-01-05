@@ -5,7 +5,6 @@ import { getJudgeTargetSpots, getStationsByOrder, loadGame, saveGame } from '../
 import type { Spot, Station } from '../types';
 import { haversineMeters } from '../utils/geo';
 import { useGameStore } from '../store/gameStore';
-import { useToast } from '../hooks/useToast';
 import { useOnline } from '../hooks/useOnline';
 import { getCurrentFix } from '../logic/location';
 import {
@@ -25,7 +24,6 @@ declare const google: any;
 export default function PlayPage() {
   const nav = useNavigate();
   const online = useOnline();
-  const { show, Toast } = useToast();
 
   const progress = useGameStore((s) => s.progress);
   const setProgress = useGameStore((s) => s.setProgress);
@@ -70,6 +68,64 @@ export default function PlayPage() {
     // eslint-disable-next-line no-console
     console.log('[DBG]', type, message, data ?? '');
   };
+
+
+// ===== User Notice Toast (本番用) =====
+type NoticeKind = 'success' | 'info' | 'warning' | 'error';
+type NoticeEntry = { id: string; atMs: number; kind: NoticeKind; message: string };
+
+const [notices, setNotices] = useState<NoticeEntry[]>([]);
+const [toastVisible, setToastVisible] = useState(false);
+const [noticeOpen, setNoticeOpen] = useState(false);
+const noticeOpenRef = useRef(false);
+useEffect(() => {
+  noticeOpenRef.current = noticeOpen;
+}, [noticeOpen]);
+
+const toastTimerRef = useRef<number | null>(null);
+const closeNotice = () => {
+  if (toastTimerRef.current != null) {
+    window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = null;
+  }
+  setToastVisible(false);
+  setNoticeOpen(false);
+};
+
+const pushNotice = (kind: NoticeKind, message: string, durationMs?: number) => {
+  const entry: NoticeEntry = { id: `${Date.now()}_${Math.random().toString(16).slice(2)}`, atMs: Date.now(), kind, message };
+  setNotices((prev) => [entry, ...prev].slice(0, 200));
+  setToastVisible(true);
+
+  // auto close
+  if (toastTimerRef.current != null) {
+    window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = null;
+  }
+  const ms = durationMs ?? (kind === 'error' ? 4000 : kind === 'success' ? 2800 : 3500);
+  if (ms > 0) {
+    toastTimerRef.current = window.setTimeout(() => {
+      // 履歴を開いている間は消さない
+      if (noticeOpenRef.current) return;
+      setToastVisible(false);
+    }, ms);
+  }
+};
+
+const fmtDelta = (d: number) => (d >= 0 ? `+${d}` : `${d}`);
+const findSpotById = (id: string) => spots.find((s) => s.ID === id);
+
+const findNearestStation = (loc: { lat: number; lng: number }) => {
+  let best: { st: Station; d: number } | null = null;
+  for (const st of stations) {
+    const d = haversineMeters(loc, { lat: st.lat, lng: st.lng });
+    if (d > CHECKIN_RADIUS_M) continue;
+    if (!best || d < best.d || (d === best.d && st.stationId < best.st.stationId)) {
+      best = { st, d };
+    }
+  }
+  return best?.st;
+};
 
   // ===== Persistent visited marker (⭐️) =====
   const EVER_VISITED_SPOT_KEY = 'ibumaku_everVisitedSpotIds_v1';
@@ -136,15 +192,14 @@ export default function PlayPage() {
     return null;
   };
 
-  const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: any) => {
-    setProgress(p);
-    show(msg, 3500);
-    if (logType) pushLog(logType, msg, logData);
-    void saveGame(p).catch(() => {
-      // eslint-disable-next-line no-console
-      console.warn('saveGame failed');
-    });
-  };
+const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: any) => {
+  setProgress(p);
+  if (logType) pushLog(logType, msg, logData);
+  void saveGame(p).catch(() => {
+    // eslint-disable-next-line no-console
+    console.warn('saveGame failed');
+  });
+};
 
   const abandonGameNow = async () => {
     if (!progress) return;
@@ -153,7 +208,7 @@ export default function PlayPage() {
     setProgress(abandoned);
     await saveGame(abandoned);
     pushLog('ABANDONED', '途中離脱扱いでゲーム終了', { now });
-    show('タイムアップから1時間を超えたため、途中離脱扱いでゲーム終了しました。', 4500);
+    pushNotice('error', 'タイムアップから1時間を超えたため、途中離脱扱いでゲーム終了しました。', 6000);
     nav('/');
   };
 
@@ -365,7 +420,7 @@ export default function PlayPage() {
       lastFixRef.current = { lat: fix.lat, lng: fix.lng, accuracy: fix.accuracy, ts: Date.now() };
       return fix;
     } catch {
-      show('位置情報を取得できません。再試行してください。', 3500);
+      pushNotice('error', '位置情報を取得できません。再試行してください。', 4000);
       return null;
     }
   };
@@ -382,7 +437,7 @@ export default function PlayPage() {
         lastGeoRef.current = pos;
         upsertUserMarker(map, pos);
       } catch {
-        show('現在地が取得できません。位置情報の許可/通信状態を確認してください。', 3500);
+        pushNotice('error', '現在地が取得できません。位置情報の許可/通信状態を確認してください。', 4000);
         return;
       }
     }
@@ -400,12 +455,12 @@ export default function PlayPage() {
     try {
       const fix = await getCurrentFix(6000);
       setVirtualFix(fix.lat, fix.lng, Math.max(5, Math.round(fix.accuracy || 5)), 'from-current');
-      show('DBG: 仮想現在地を現在地に設定しました', 2500);
+      pushLog('DBG', '仮想現在地を現在地に設定しました');
     } catch {
       const c = map.getCenter?.();
       if (!c) return;
       setVirtualFix(c.lat(), c.lng(), 5, 'from-center');
-      show('DBG: 仮想現在地を地図中心に設定しました', 2500);
+      pushLog('DBG', '仮想現在地を地図中心に設定しました');
     }
   };
 
@@ -441,7 +496,7 @@ export default function PlayPage() {
     (async () => {
       const g = progress ?? (await loadGame());
       if (!g) {
-        show('ゲームデータがありません。ホームから新規開始してください。', 4500);
+        pushNotice('error', 'ゲームデータがありません。ホームから新規開始してください。', 4000);
         nav('/');
         return;
       }
@@ -449,7 +504,7 @@ export default function PlayPage() {
       // If game already ended, route away from Play.
       if (g.endedAtMs) {
         if ((g as any).endReason === 'ABANDONED') {
-          show('ゲームは途中離脱扱いで終了しています。', 4500);
+          pushNotice('error', 'ゲームは途中離脱扱いで終了しています。', 4000);
           nav('/');
           return;
         }
@@ -467,7 +522,7 @@ export default function PlayPage() {
         const abandoned = { ...g, endedAtMs: now, endReason: 'ABANDONED' as const };
         setProgress(abandoned);
         await saveGame(abandoned);
-        show('タイムアップから1時間を超えたため、途中離脱扱いでゲーム終了しました。', 4500);
+        pushNotice('error', 'タイムアップから1時間を超えたため、途中離脱扱いでゲーム終了しました。', 6000);
         nav('/');
         return;
       }
@@ -477,7 +532,7 @@ export default function PlayPage() {
       const st = await getStationsByOrder();
       setStations(st);
     })();
-  }, [nav, progress, setProgress, show]);
+  }, [nav, progress, setProgress]);
 
   const cooldownLeft = useMemo(() => {
     if (!progress?.cooldownUntilMs) return 0;
@@ -500,7 +555,7 @@ export default function PlayPage() {
     if (nowMs <= graceEndMs) return;
 
     void abandonGameNow();
-  }, [graceEndMs, nowMs, nav, progress, setProgress, show]);
+  }, [graceEndMs, nowMs, nav, progress, setProgress]);
 
   // ===== Map init / cleanup =====
   useEffect(() => {
@@ -522,8 +577,8 @@ export default function PlayPage() {
           ...(mapId ? { mapId } : {}),
           gestureHandling: 'greedy', // 1本指で移動
           streetViewControl: false, // ペグマン非表示
-          fullscreenControl: false, // 全画面ボタン非表示
-          mapTypeControl: false, // 地図/航空写真ボタン非表示
+          fullscreenControl: false, // 全画面ボタン無効
+          mapTypeControl: false, // 地図/航空写真ボタン無効
         });
 
         mapRef.current = map;
@@ -532,7 +587,7 @@ export default function PlayPage() {
         startGeoWatch(map);
         if (DEBUG_TOOLS && useVirtualRef.current) ensureVirtualMarker(map);
       } catch (e: any) {
-        show(e?.message ?? String(e), 6000);
+        pushNotice('error', e?.message ?? String(e), 6000);
       }
     })();
 
@@ -579,7 +634,7 @@ export default function PlayPage() {
       parkMap();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [show, DEBUG_TOOLS]);
+  }, [DEBUG_TOOLS]);
 
   // Apply the game start center once (does not touch zoom), e.g. after reload when progress is loaded asynchronously.
   useEffect(() => {
@@ -823,7 +878,7 @@ export default function PlayPage() {
               lng: p2.lng,
               nearestM: best ? Math.round(best.d) : null,
             });
-            show('近くにスポットがないためCPを移動できません（300m以内が必要）', 3500);
+            pushNotice('error', '近くにスポットがないためCPを移動できません（300m以内が必要）', 4000);
             return;
           }
 
@@ -834,7 +889,7 @@ export default function PlayPage() {
               /* noop */
             }
             pushLog('CP_DRAG_DUP', `★CP${i + 1} duplicate -> revert`, { targetId: best!.sp.ID, name: best!.sp.Name });
-            show('そのスポットは既に別のCPに設定されています', 3500);
+            pushNotice('error', 'そのスポットは既に別のCPに設定されています', 4000);
             return;
           }
 
@@ -910,7 +965,7 @@ export default function PlayPage() {
       map,
       markers: spotMarkers,
       renderer: {
-        render: ({ position }) => {
+        render: ({ position }: any) => {
           return new google.maps.Marker({
             position,
             icon: {
@@ -927,14 +982,14 @@ export default function PlayPage() {
         },
       } as any,
     });
-  }, [spots, progress, DEBUG_TOOLS, show]);
+  }, [spots, progress, DEBUG_TOOLS]);
 
   // ===== Check-in actions =====
   const onCheckIn = async () => {
     if (checkInBusy) return;
-    if (!online) return show('オフライン/圏外のためチェックインできません。オンラインで再試行してください。', 4500);
+    if (!online) return pushNotice('error', 'オフライン/圏外のためチェックインできません。オンラインで再試行してください。', 4000);
     if (!progress) return;
-    if (progress.endedAtMs) return show('ゲームは終了しています。', 4500);
+    if (progress.endedAtMs) return pushNotice('error', 'ゲームは終了しています。', 4000);
     if (graceEndMs && Date.now() > graceEndMs) {
       await abandonGameNow();
       return;
@@ -993,7 +1048,7 @@ export default function PlayPage() {
           chosenCandidate,
           cooldownLeftSec: cdLeft,
         });
-        show(r.message, 4500);
+        pushNotice('error', r.message, 4000);
         return;
       }
 
@@ -1026,6 +1081,36 @@ export default function PlayPage() {
       }
 
       applyProgressUpdate(r.progress, r.message);
+
+
+// ===== user notices =====
+try {
+  const afterP: any = after;
+  const scoreDelta = (afterP.score ?? 0) - ((before as any).score ?? 0);
+
+  const beforeVisited = new Set<string>(((before as any).visitedSpotIds ?? []) as any);
+  const afterVisited: string[] = ((afterP.visitedSpotIds ?? []) as any) as string[];
+  const addedSpotIds = afterVisited.filter((id) => !beforeVisited.has(id));
+  if (addedSpotIds[0]) {
+    const sp = findSpotById(addedSpotIds[0]);
+    const name = sp?.Name ?? addedSpotIds[0];
+    pushNotice('success', `スポット達成：${name}（${fmtDelta(scoreDelta)}）`, 2800);
+  } else {
+    // 既に達成済み等で追加が無いケース（通常は起きにくい）
+    pushNotice('success', r.message, 2800);
+  }
+
+  const beforeCp = new Set<string>(((before as any).reachedCpIds ?? []) as any);
+  const afterCp: string[] = ((afterP.reachedCpIds ?? []) as any) as string[];
+  const addedCpIds = afterCp.filter((id) => !beforeCp.has(id));
+  for (const id of addedCpIds.slice(0, 3)) {
+    const sp = findSpotById(id);
+    const name = sp?.Name ?? id;
+    pushNotice('success', `CP達成：${name}`, 2800);
+  }
+} catch {
+  // noop
+}
     } finally {
       setCheckInBusy(false);
     }
@@ -1033,9 +1118,9 @@ export default function PlayPage() {
 
   const onJrBoard = async () => {
     if (checkInBusy) return;
-    if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
+    if (!online) return pushNotice('error', 'オフライン/圏外のためチェックインできません。', 4000);
     if (!progress) return;
-    if (progress.endedAtMs) return show('ゲームは終了しています。', 4500);
+    if (progress.endedAtMs) return pushNotice('error', 'ゲームは終了しています。', 4000);
     if (graceEndMs && Date.now() > graceEndMs) {
       await abandonGameNow();
       return;
@@ -1073,7 +1158,7 @@ export default function PlayPage() {
       if (!r.ok) {
         const cdLeft = before.cooldownUntilMs ? Math.max(0, Math.ceil((before.cooldownUntilMs - Date.now()) / 1000)) : 0;
         pushLog('JR_BOARD_FAIL', r.message, { code: r.code, candidateTop: candTop, cooldownLeftSec: cdLeft });
-        show(r.message, 4500);
+        pushNotice('error', r.message, 4000);
         return;
       }
 
@@ -1085,6 +1170,48 @@ export default function PlayPage() {
       });
 
       applyProgressUpdate(r.progress, r.message);
+
+
+try {
+  const afterP: any = after;
+  const scoreDelta = (afterP.score ?? 0) - ((before as any).score ?? 0);
+  const st = findNearestStation(loc);
+  const name = st?.name ?? (st?.stationId ?? '駅');
+  const pts = scoreDelta !== 0 ? `（${fmtDelta(scoreDelta)}）` : '';
+  pushNotice('success', `JR乗車：${name}${pts}`, 2800);
+} catch {
+  pushNotice('success', r.message, 2800);
+}
+
+
+// ===== user notices =====
+try {
+  const afterP: any = after;
+  const scoreDelta = (afterP.score ?? 0) - ((before as any).score ?? 0);
+
+  const beforeVisited = new Set<string>(((before as any).visitedSpotIds ?? []) as any);
+  const afterVisited: string[] = ((afterP.visitedSpotIds ?? []) as any) as string[];
+  const addedSpotIds = afterVisited.filter((id) => !beforeVisited.has(id));
+  if (addedSpotIds[0]) {
+    const sp = findSpotById(addedSpotIds[0]);
+    const name = sp?.Name ?? addedSpotIds[0];
+    pushNotice('success', `スポット達成：${name}（${fmtDelta(scoreDelta)}）`, 2800);
+  } else {
+    // 既に達成済み等で追加が無いケース（通常は起きにくい）
+    pushNotice('success', r.message, 2800);
+  }
+
+  const beforeCp = new Set<string>(((before as any).reachedCpIds ?? []) as any);
+  const afterCp: string[] = ((afterP.reachedCpIds ?? []) as any) as string[];
+  const addedCpIds = afterCp.filter((id) => !beforeCp.has(id));
+  for (const id of addedCpIds.slice(0, 3)) {
+    const sp = findSpotById(id);
+    const name = sp?.Name ?? id;
+    pushNotice('success', `CP達成：${name}`, 2800);
+  }
+} catch {
+  // noop
+}
     } finally {
       setCheckInBusy(false);
     }
@@ -1092,14 +1219,14 @@ export default function PlayPage() {
 
   const onJrAlight = async () => {
     if (checkInBusy) return;
-    if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
+    if (!online) return pushNotice('error', 'オフライン/圏外のためチェックインできません。', 4000);
     if (!progress) return;
-    if (progress.endedAtMs) return show('ゲームは終了しています。', 4500);
+    if (progress.endedAtMs) return pushNotice('error', 'ゲームは終了しています。', 4000);
     if (graceEndMs && Date.now() > graceEndMs) {
       await abandonGameNow();
       return;
     }
-    if (progress.endedAtMs) return show('ゲームは終了しています。', 4500);
+    if (progress.endedAtMs) return pushNotice('error', 'ゲームは終了しています。', 4000);
     if (graceEndMs && Date.now() > graceEndMs) {
       await abandonGameNow();
       return;
@@ -1137,7 +1264,7 @@ export default function PlayPage() {
       if (!r.ok) {
         const cdLeft = before.cooldownUntilMs ? Math.max(0, Math.ceil((before.cooldownUntilMs - Date.now()) / 1000)) : 0;
         pushLog('JR_ALIGHT_FAIL', r.message, { code: r.code, candidateTop: candTop, cooldownLeftSec: cdLeft });
-        show(r.message, 4500);
+        pushNotice('error', r.message, 4000);
         return;
       }
 
@@ -1149,6 +1276,48 @@ export default function PlayPage() {
       });
 
       applyProgressUpdate(r.progress, r.message);
+
+
+try {
+  const afterP: any = after;
+  const scoreDelta = (afterP.score ?? 0) - ((before as any).score ?? 0);
+  const st = findNearestStation(loc);
+  const name = st?.name ?? (st?.stationId ?? '駅');
+  const pts = scoreDelta !== 0 ? `（${fmtDelta(scoreDelta)}）` : '';
+  pushNotice('success', `JR降車：${name}${pts}`, 2800);
+} catch {
+  pushNotice('success', r.message, 2800);
+}
+
+
+// ===== user notices =====
+try {
+  const afterP: any = after;
+  const scoreDelta = (afterP.score ?? 0) - ((before as any).score ?? 0);
+
+  const beforeVisited = new Set<string>(((before as any).visitedSpotIds ?? []) as any);
+  const afterVisited: string[] = ((afterP.visitedSpotIds ?? []) as any) as string[];
+  const addedSpotIds = afterVisited.filter((id) => !beforeVisited.has(id));
+  if (addedSpotIds[0]) {
+    const sp = findSpotById(addedSpotIds[0]);
+    const name = sp?.Name ?? addedSpotIds[0];
+    pushNotice('success', `スポット達成：${name}（${fmtDelta(scoreDelta)}）`, 2800);
+  } else {
+    // 既に達成済み等で追加が無いケース（通常は起きにくい）
+    pushNotice('success', r.message, 2800);
+  }
+
+  const beforeCp = new Set<string>(((before as any).reachedCpIds ?? []) as any);
+  const afterCp: string[] = ((afterP.reachedCpIds ?? []) as any) as string[];
+  const addedCpIds = afterCp.filter((id) => !beforeCp.has(id));
+  for (const id of addedCpIds.slice(0, 3)) {
+    const sp = findSpotById(id);
+    const name = sp?.Name ?? id;
+    pushNotice('success', `CP達成：${name}`, 2800);
+  }
+} catch {
+  // noop
+}
     } finally {
       setCheckInBusy(false);
     }
@@ -1156,14 +1325,14 @@ export default function PlayPage() {
 
   const onGoal = async () => {
     if (checkInBusy) return;
-    if (!online) return show('オフライン/圏外のためチェックインできません。', 4500);
+    if (!online) return pushNotice('error', 'オフライン/圏外のためチェックインできません。', 4000);
     if (!progress) return;
-    if (progress.endedAtMs) return show('ゲームは終了しています。', 4500);
+    if (progress.endedAtMs) return pushNotice('error', 'ゲームは終了しています。', 4000);
     if (graceEndMs && Date.now() > graceEndMs) {
       await abandonGameNow();
       return;
     }
-    if (progress.endedAtMs) return show('ゲームは終了しています。', 4500);
+    if (progress.endedAtMs) return pushNotice('error', 'ゲームは終了しています。', 4000);
     if (graceEndMs && Date.now() > graceEndMs) {
       await abandonGameNow();
       return;
@@ -1182,7 +1351,7 @@ export default function PlayPage() {
 
       if (!r.ok) {
         pushLog('GOAL_FAIL', r.message, { code: r.code, loc, accuracy: fix.accuracy, radiusM: CHECKIN_RADIUS_M });
-        show(r.message, 4500);
+        pushNotice('error', r.message, 4000);
         return;
       }
 
@@ -1197,9 +1366,20 @@ export default function PlayPage() {
         finalPenalty: after.penalty,
       });
 
-      setProgress(r.progress);
-      await saveGame(r.progress);
-      nav('/result');
+
+setProgress(r.progress);
+await saveGame(r.progress);
+
+try {
+  const afterP: any = after;
+  pushNotice('info', `ゴール完了：リザルトへ（最終得点 ${afterP.score ?? ''}）`, 6000);
+} catch {
+  pushNotice('info', 'ゴール完了：リザルトへ', 6000);
+}
+
+// 通知が一瞬でも見えるように少しだけ待ってから遷移
+window.setTimeout(() => nav('/result'), 250);
+
     } finally {
       setCheckInBusy(false);
     }
@@ -1362,7 +1542,79 @@ export default function PlayPage() {
         )}
       </div>
 
-      {Toast}
+      {/* User Notice Toast (1行＋タップで履歴) */}
+      {toastVisible && notices[0] && (
+        <div
+          onClick={() => setNoticeOpen((v) => !v)}
+          style={{
+            position: 'fixed',
+            left: 12,
+            right: 12,
+            bottom: 72,
+            zIndex: 9999,
+            background: 'rgba(0,0,0,.86)',
+            color: '#fff',
+            borderRadius: 10,
+            padding: '10px 12px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            cursor: 'pointer',
+            userSelect: 'none',
+          }}
+        >
+          <div style={{ flex: 1, fontSize: 14, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {notices[0].message}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, opacity: 0.9, fontSize: 12 }}>
+            <span>{noticeOpen ? '▲' : '▼'}</span>
+            <button
+              className="btn"
+              onClick={(e) => {
+                e.stopPropagation();
+                closeNotice();
+              }}
+              style={{
+                padding: '4px 8px',
+                fontSize: 12,
+                opacity: 0.95,
+              }}
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
+
+      {toastVisible && noticeOpen && notices.length > 0 && (
+        <div
+          style={{
+            position: 'fixed',
+            left: 12,
+            right: 12,
+            bottom: 130,
+            zIndex: 9999,
+            background: 'rgba(255,255,255,.97)',
+            border: '1px solid rgba(0,0,0,.2)',
+            borderRadius: 10,
+            padding: 10,
+            maxHeight: '35vh',
+            overflow: 'auto',
+          }}
+        >
+          <div style={{ fontSize: 12, fontWeight: 800, marginBottom: 6 }}>通知履歴（最新が上）</div>
+          <div style={{ fontSize: 12, lineHeight: 1.4 }}>
+            {notices.slice(0, 5).map((n) => (
+              <div key={n.id} style={{ marginBottom: 6 }}>
+                <b>{new Date(n.atMs).toLocaleTimeString()}</b> {n.message}
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
+            <button className="btn" onClick={() => setNoticeOpen(false)}>閉じる</button>
+          </div>
+        </div>
+      )}
     </>
   );
 }
