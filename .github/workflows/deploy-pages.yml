@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 permissions:
@@ -35,22 +35,23 @@ jobs:
         run: npm run build
 
       - name: Copy data into dist (assert)
-          run: |
-           echo "== repo root =="
-            ls -la
-            echo "== data dir =="
-            ls -la data || true
+        run: |
+          echo "== repo root =="
+          ls -la
+          echo "== data dir =="
+          ls -la data || true
 
-            mkdir -p dist
-            cp -r data dist/
+          mkdir -p dist
+          cp -r data dist/
 
-            echo "== dist after copy =="
-            ls -la dist
-            echo "== dist/data =="
-            ls -la dist/data || true
+          echo "== dist after copy =="
+          ls -la dist
+          echo "== dist/data =="
+          ls -la dist/data || true
 
-            # 必須ファイルが無いなら失敗させる
-            test -f dist/data/version.json
+          test -f dist/data/version.json
+
+          touch dist/.nojekyll
 
       - uses: actions/upload-pages-artifact@v3
         with:
