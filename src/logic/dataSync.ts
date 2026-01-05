@@ -28,7 +28,7 @@ const LS_KEY_VER = 'ibumaku.masterData.version';
 
 function defaultBaseUrl(): string {
   // Fallback base URL (override with VITE_DATA_BASE_URL)
-  return 'https://cydtdzhvp9-hash.github.io/ibumaku-pwa.github.io/data';
+  return 'https://cydtdzhvp9-hash.github.io/ibumaku-pwa/data';
 }
 
 function getBaseUrl(): string {
