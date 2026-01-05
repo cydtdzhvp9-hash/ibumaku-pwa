@@ -1,5 +1,5 @@
 {
   "version": "20260105",
-  "spotsCsvPath": "20260105/Ibumakuspotlist_MyMaps.csv",
-  "stationsCsvPath": "20260105/Ibumaku_station.csv"
+  "spotsPath": "20260105/Ibumakuspotlist_MyMaps.csv",
+  "stationsPath": "20260105/Ibumaku_station.csv"
 }
