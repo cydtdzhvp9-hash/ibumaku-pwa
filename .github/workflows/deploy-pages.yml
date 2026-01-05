@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: ["main"]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -11,12 +11,17 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.VITE_GOOGLE_MAPS_API_KEY }}
+      VITE_GOOGLE_MAP_ID: ${{ secrets.VITE_GOOGLE_MAP_ID }}
+      VITE_DEBUG_TOOLS: "0"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -27,31 +32,18 @@ jobs:
 
       - run: npm ci
 
+      - name: Check env exists (no leak)
+        run: node -e "console.log('API_KEY length=', (process.env.VITE_GOOGLE_MAPS_API_KEY||'').length); console.log('MAP_ID length=', (process.env.VITE_GOOGLE_MAP_ID||'').length)"
+
       - name: Build
-        env:
-          VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.VITE_GOOGLE_MAPS_API_KEY }}
-          VITE_GOOGLE_MAP_ID: ${{ secrets.VITE_GOOGLE_MAP_ID }}
-          VITE_DEBUG_TOOLS: "0"
         run: npm run build
 
-      - name: Copy data into dist (assert)
+      - name: Copy data into dist
         run: |
-          echo "== repo root =="
-          ls -la
-          echo "== data dir =="
-          ls -la data || true
-
-          mkdir -p dist
+          rm -rf dist/data
           cp -r data dist/
-
-          echo "== dist after copy =="
-          ls -la dist
-          echo "== dist/data =="
-          ls -la dist/data || true
-
-          test -f dist/data/version.json
-
           touch dist/.nojekyll
+          test -f dist/data/version.json
 
       - uses: actions/upload-pages-artifact@v3
         with:
