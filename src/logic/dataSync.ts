@@ -47,13 +47,17 @@ function withCacheBuster(url: string, version: string): string {
 
 async function fetchJsonNoStore<T>(url: string): Promise<T> {
   const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`データ取得に失敗しました: ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    throw new Error(`version.json取得に失敗しました: ${res.status} ${res.statusText}\nURL: ${url}`);
+  }
   return (await res.json()) as T;
 }
 
 async function fetchTextNoStore(url: string): Promise<string> {
   const res = await fetch(url, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`CSV取得に失敗しました: ${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    throw new Error(`CSV取得に失敗しました: ${res.status} ${res.statusText}\nURL: ${url}`);
+  }
   return await res.text();
 }
 
