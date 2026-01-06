@@ -41,6 +41,11 @@ export default function PlayPage() {
   const [stations, setStations] = useState<Station[]>([]);
   const [checkInBusy, setCheckInBusy] = useState(false);
 
+  // Map attach 完了をフックして marker 描画を再実行するためのトリガ。
+  // 再開時に progress/spots が先に復元され、mapRef が後から作られると
+  // marker 描画 useEffect が 1 回も走らず、START/GOAL/CP/スポットが表示されないことがある。
+  const [mapReadyNonce, setMapReadyNonce] = useState(0);
+
   // ===== Debug Tools gate =====
   const DEBUG_TOOLS = useMemo(() => {
     const q = new URLSearchParams(window.location.search);
@@ -582,6 +587,8 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
         });
 
         mapRef.current = map;
+        // map が用意できたタイミングで marker 描画 effect を再実行させる
+        setMapReadyNonce((n) => n + 1);
         if (!infoWindowRef.current) infoWindowRef.current = new google.maps.InfoWindow();
 
         startGeoWatch(map);
@@ -982,7 +989,7 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
         },
       } as any,
     });
-  }, [spots, progress, DEBUG_TOOLS]);
+  }, [spots, progress, DEBUG_TOOLS, mapReadyNonce]);
 
   // ===== Check-in actions =====
   const onCheckIn = async () => {
