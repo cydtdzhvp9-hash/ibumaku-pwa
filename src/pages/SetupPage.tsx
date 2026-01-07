@@ -10,6 +10,36 @@ import { resolveStartGoal, useGameStore } from '../store/gameStore';
 import { filterCpPoolByCity, selectCpSpotsMVP, startNewGame } from '../logic/game';
 import { syncMasterDataIfNeeded } from '../logic/dataSync';
 
+function haversineM(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const R = 6371000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function findNearestSpotName(lat: number, lng: number, spots: Spot[]): string | null {
+  let best: Spot | null = null;
+  let bestD = Number.POSITIVE_INFINITY;
+  for (const s of spots) {
+    const d = haversineM(lat, lng, s.lat, s.lng);
+    if (d < bestD) {
+      bestD = d;
+      best = s;
+    }
+  }
+  return best?.name ?? null;
+}
+
+function formatDuration(min: number) {
+  if (!Number.isFinite(min)) return '';
+  if (min % 60 === 0) return `${min / 60}時間`;
+  return `${min}分`;
+}
+
 const durationOptions = Array.from({ length: 48 }, (_, i) => (i + 1) * 15); // 15..720
 
 export default function SetupPage() {
@@ -26,6 +56,8 @@ export default function SetupPage() {
     start: undefined,
     goal: undefined,
   });
+
+  const [isConfirming, setIsConfirming] = useState(false);
 
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
@@ -89,7 +121,25 @@ export default function SetupPage() {
       }
     })();
 
-    return () => {
+    const cityLabels: string[] = [];
+  if (config.cityFilter?.ibusuki) cityLabels.push('指宿市');
+  if (config.cityFilter?.minamikyushu) cityLabels.push('南九州市');
+  if (config.cityFilter?.makurazaki) cityLabels.push('枕崎市');
+  const cpRegionLabel = cityLabels.length ? cityLabels.join('、') : '指定なし';
+
+  const startLabel = (() => {
+    if (!config.start) return '現在地';
+    const nm = judgeSpots.length ? findNearestSpotName(config.start.lat, config.start.lng, judgeSpots) : null;
+    return nm ? `${nm}付近` : '地図指定';
+  })();
+
+  const goalLabel = (() => {
+    if (!config.goal) return '現在地';
+    const nm = judgeSpots.length ? findNearestSpotName(config.goal.lat, config.goal.lng, judgeSpots) : null;
+    return nm ? `${nm}付近` : '地図指定';
+  })();
+
+  return () => {
       if (clickListenerRef.current) {
         try {
           clickListenerRef.current.remove();
@@ -185,7 +235,7 @@ export default function SetupPage() {
 
   const canStart = online && !syncing;
 
-  const onStart = async () => {
+  const onStartGame = async () => {
     if (!online) return show('オフライン/圏外では開始できません。オンラインにして再試行してください。', 4500);
 
     // 方式C: ゲーム開始時にマップデータを自動更新（差分があれば全件上書き）
@@ -321,7 +371,41 @@ export default function SetupPage() {
                 />
                 枕崎市
               </label>
+            
+        {isConfirming && (
+          <>
+            <div style={{ height: 12 }} />
+            <div className="card">
+              <h3>設定内容の確認</h3>
+              <div className="row" style={{ flexDirection: 'column', gap: 6 }}>
+                <div>制限時間：{formatDuration(config.durationMin)}</div>
+                <div>CP数：{config.cpCount}</div>
+                <div>CP地域：{cpRegionLabel}</div>
+                <div>JR使用：{config.jrEnabled ? 'ON' : 'OFF'}</div>
+                <div>スタート：{startLabel}</div>
+                <div>ゴール：{goalLabel}</div>
+              </div>
+              <div style={{ height: 10 }} />
+              <div className="actions">
+                <button
+                  className="btn primary"
+                  onClick={async () => {
+                    setIsConfirming(false);
+                    await onStartGame();
+                  }}
+                  disabled={!canStart}
+                >
+                  開始
+                </button>
+                <button className="btn" onClick={() => setIsConfirming(false)}>
+                  修正
+                </button>
+              </div>
             </div>
+          </>
+        )}
+
+        </div>
             <div className="hint">※スポット住所に市名が含まれない場合は除外されます</div>
           </div>
           <div className="col">
@@ -343,7 +427,7 @@ export default function SetupPage() {
           <button className="btn" onClick={onUseCurrentForStartGoal} disabled={syncing}>
             現在地をスタート/ゴールにする
           </button>
-          <button className="btn primary" onClick={onStart} disabled={!canStart}>
+          <button className="btn primary" onClick={() => setIsConfirming(true)} disabled={!canStart}>
             {syncing ? 'データ確認中...' : '開始'}
           </button>
         </div>
