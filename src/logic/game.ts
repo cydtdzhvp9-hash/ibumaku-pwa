@@ -193,6 +193,12 @@ export function checkInSpotOrCp(progress: GameProgress, loc: LatLng, accuracy: n
   if (!cand) return { ok:false, code:'NO_SPOT', message:`50m以内にスポットが見つかりません。` };
 
   const spot = cand.spot;
+
+  // In-train rule: while boarded, only station-category spots can be checked in via this button.
+  if (progress.boardedStationId && spot.Category !== '駅') {
+    return { ok:false, code:'IN_TRAIN', message:'乗車中は駅チェックインのみ可能です。降車後に再試行してください。' };
+  }
+
   // Score only once per spot ID
   const visited = new Set(progress.visitedSpotIds);
   const reachedCp = new Set(progress.reachedCpIds);
