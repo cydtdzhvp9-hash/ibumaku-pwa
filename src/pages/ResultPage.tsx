@@ -83,9 +83,27 @@ export default function ResultPage() {
   }
 
   const stationName = (id: string) => stationById.get(id)?.name ?? id;
-  const boardNames = boardIds.map(stationName);
-  const alightNames = alightIds.map(stationName);
-  const passNames = passIds.map(stationName);
+
+  // Deduplicate while preserving order
+  const uniq = <T,>(arr: T[]): T[] => {
+    const seen = new Set<T>();
+    const out: T[] = [];
+    for (const x of arr) {
+      if (seen.has(x)) continue;
+      seen.add(x);
+      out.push(x);
+    }
+    return out;
+  };
+
+  const boardIdsU = uniq(boardIds);
+  const alightIdsU = uniq(alightIds);
+  const exclude = new Set<string>([...boardIdsU, ...alightIdsU]);
+  const passIdsU = uniq(passIds.filter(id => !exclude.has(id)));
+
+  const boardNames = boardIdsU.map(stationName);
+  const alightNames = alightIdsU.map(stationName);
+  const passNames = passIdsU.map(stationName);
 
   const penaltyDisplay = progress.penalty === 0 ? '0' : `-${Math.abs(progress.penalty)}`;
 
