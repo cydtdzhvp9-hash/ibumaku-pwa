@@ -148,6 +148,19 @@ export default function ResultPage() {
         </div>
       )}
 
+
+      <hr />
+
+      <div>実績解除ボーナス：<b>+{progress.achievementBonus ?? 0}</b></div>
+      {(progress.achievementUnlocked && progress.achievementUnlocked.length > 0) ? (
+        <ul>
+          {progress.achievementUnlocked.map((a, idx) => (
+            <li key={`${idx}-${a.id}`}>{a.name}（+{a.points}）</li>
+          ))}
+        </ul>
+      ) : (
+        <div className="hint">このゲームで解除された実績はありません。</div>
+      )}
       <hr />
       <div className="actions">
         <Link className="btn" to="/">ホーム</Link>

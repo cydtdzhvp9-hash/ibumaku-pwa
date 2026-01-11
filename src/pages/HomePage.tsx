@@ -70,6 +70,7 @@ export default function HomePage() {
           <button className="btn primary" onClick={onNew}>新規</button>
           <button className="btn" onClick={onResume} disabled={!hasGame}>再開</button>
           <Link className="btn" to="/result">結果表示</Link>
+          <Link className="btn" to="/achievements">実績確認</Link>
         </div>
         <hr />
         <div className="hint">

@@ -7,6 +7,7 @@ import { haversineMeters } from '../utils/geo';
 import { useGameStore } from '../store/gameStore';
 import { useOnline } from '../hooks/useOnline';
 import { getCurrentFix } from '../logic/location';
+import { computeBonus, computeGameUnlocks, ensureRecordsForCumulative, updateRecordsForGameUnlocks } from '../logic/achievements';
 import {
   CHECKIN_RADIUS_M,
   JR_COOLDOWN_SEC,
@@ -1075,6 +1076,8 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
           const ever = everVisitedSpotIdsRef.current;
           for (const id of added) ever.add(id);
           saveEverVisitedSpots();
+          // 実績（累積解除・記録のみ）を更新
+          ensureRecordsForCumulative(everVisitedSpotIdsRef.current, spots, Date.now());
         }
       } catch {
         // ignore
@@ -1372,11 +1375,22 @@ try {
       });
 
 
-setProgress(r.progress);
-await saveGame(r.progress);
+// ===== achievements (score bonus) =====
+      const unlocks = computeGameUnlocks(after as any, spots);
+      const bonus = computeBonus(unlocks);
+      const now = (after as any).endedAtMs ?? Date.now();
+      // Update records (per-game unlock counts)
+      updateRecordsForGameUnlocks(unlocks, now);
+
+      const savedProgress: any = bonus > 0
+        ? { ...(after as any), achievementUnlocked: unlocks, achievementBonus: bonus, score: (after as any).score + bonus }
+        : { ...(after as any), achievementUnlocked: [], achievementBonus: 0 };
+
+      setProgress(savedProgress);
+      await saveGame(savedProgress);
 
 try {
-  const afterP: any = after;
+  const afterP: any = savedProgress;
   pushNotice('info', `ゴール完了：リザルトへ（最終得点 ${afterP.score ?? ''}）`, 6000);
 } catch {
   pushNotice('info', 'ゴール完了：リザルトへ', 6000);

@@ -63,6 +63,14 @@ export type GameProgress = {
    * Station points are added at most once per stationId per game.
    */
   scoredStationIds?: string[];
+
+  /**
+   * Achievements unlocked in this game (for result display).
+   * Note: scoring is applied only for achievements unlocked within the current game.
+   */
+  achievementUnlocked?: { id: string; name: string; points: number }[];
+  achievementBonus?: number;
+
   score: number;
   penalty: number;
   endedAtMs?: number;
