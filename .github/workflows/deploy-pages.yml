@@ -21,6 +21,10 @@ jobs:
       VITE_GOOGLE_MAPS_API_KEY: ${{ secrets.VITE_GOOGLE_MAPS_API_KEY }}
       VITE_GOOGLE_MAP_ID: ${{ secrets.VITE_GOOGLE_MAP_ID }}
       VITE_DEBUG_TOOLS: "0"
+      # KPI result submission (optional)
+      VITE_KPI_ENDPOINT_URL: ${{ secrets.VITE_KPI_ENDPOINT_URL }}
+      VITE_KPI_ENABLED: ${{ vars.VITE_KPI_ENABLED }}
+      VITE_KPI_TOKEN: ${{ secrets.VITE_KPI_TOKEN }}
 
     steps:
       - uses: actions/checkout@v4

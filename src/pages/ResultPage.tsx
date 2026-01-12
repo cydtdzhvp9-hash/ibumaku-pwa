@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { getAllSpots, getStationsByOrder, loadGame } from '../db/repo';
 import { calcPenalty } from '../logic/game';
+import { buildKpiPayloadV1, sendKpiPayload } from '../logic/kpi';
 import { useGameStore } from '../store/gameStore';
 import type { Spot, Station } from '../types';
 
@@ -12,6 +13,9 @@ export default function ResultPage() {
   const [loaded, setLoaded] = useState(false);
   const [spots, setSpots] = useState<Spot[]>([]);
   const [stations, setStations] = useState<Station[]>([]);
+  const [shareOk, setShareOk] = useState(false);
+  const [kpiStatus, setKpiStatus] = useState<'idle'|'sending'|'sent'|'error'>('idle');
+  const [kpiError, setKpiError] = useState<string>('');
 
   useEffect(() => {
     (async () => {
@@ -31,6 +35,27 @@ export default function ResultPage() {
   }, [nav, progress, setProgress]);
 
   if (!loaded || !progress) return <div className="card">読込中...</div>;
+
+  const kpiUiEnabled = (import.meta.env.VITE_KPI_ENABLED === '1') && !!import.meta.env.VITE_KPI_ENDPOINT_URL;
+
+  const onSendKpi = async () => {
+    if (!kpiUiEnabled) return;
+    if (!navigator.onLine) {
+      setKpiStatus('error');
+      setKpiError('オフラインのため送信できません。通信状況を確認して再度お試しください。');
+      return;
+    }
+    try {
+      setKpiError('');
+      setKpiStatus('sending');
+      const payload = buildKpiPayloadV1(progress, spots, shareOk);
+      await sendKpiPayload(payload);
+      setKpiStatus('sent');
+    } catch (e: any) {
+      setKpiStatus('error');
+      setKpiError(e?.message ?? String(e));
+    }
+  };
 
   const reachedCpSet = new Set(progress.reachedCpIds);
   const missingCpCount = progress.cpSpotIds.filter(id => !reachedCpSet.has(id)).length;
@@ -160,6 +185,37 @@ export default function ResultPage() {
         </ul>
       ) : (
         <div className="hint">このゲームで解除された実績はありません。</div>
+      )}
+
+      {kpiUiEnabled && (
+        <>
+          <hr />
+          <h4 style={{ margin: '10px 0 6px' }}>リザルト送信（KPI集計）</h4>
+          <div className="hint">
+            送信する内容：スコア／ペナルティ／訪問数／CP達成／JRイベント数／実績解除（ID）など（個人が特定される情報は送信しません）。
+            共有OKを選択した場合のみ、共有用の集計表に反映されます。
+          </div>
+          <label style={{ display: 'block', marginTop: 6 }}>
+            <input
+              type="checkbox"
+              checked={shareOk}
+              onChange={(e) => setShareOk(e.target.checked)}
+              disabled={kpiStatus === 'sending'}
+            />{' '}
+            集計結果の共有に同意する（共有OK）
+          </label>
+          <div className="actions" style={{ marginTop: 8 }}>
+            <button
+              className="btn"
+              onClick={onSendKpi}
+              disabled={kpiStatus === 'sending' || kpiStatus === 'sent'}
+            >
+              {kpiStatus === 'sent' ? '送信済み' : (kpiStatus === 'sending' ? '送信中...' : '送信')}
+            </button>
+          </div>
+          {kpiStatus === 'sent' && <div className="hint">送信しました。ご協力ありがとうございます。</div>}
+          {kpiStatus === 'error' && <div className="hint" style={{ color: '#b00' }}>送信失敗：{kpiError}</div>}
+        </>
       )}
       <hr />
       <div className="actions">
