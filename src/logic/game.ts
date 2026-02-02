@@ -229,7 +229,7 @@ export function checkInSpotOrCp(progress: GameProgress, loc: LatLng, accuracy: n
   };
 }
 
-function pickStationWithinRadius(stations: Station[], loc: LatLng): { st: Station; d: number } | null {
+function pickStationWithinRadius(stations: Station[], loc: LatLng, radiusM: number = CHECKIN_RADIUS_M): { st: Station; d: number } | null {
   const cs = stations.map(st => ({ st, d: haversineMeters(loc, {lat: st.lat, lng: st.lng}) }))
     .filter(x => x.d <= CHECKIN_RADIUS_M);
   if (!cs.length) return null;
@@ -290,8 +290,8 @@ export function jrAlight(progress: GameProgress, loc: LatLng, accuracy: number, 
   const boardedId = progress.boardedStationId;
   if (!boardedId) return { ok:false, code:'NOT_BOARDED', message:'乗車チェックインが先です。' };
 
-  const cand = pickStationWithinRadius(stations, loc);
-  if (!cand) return { ok:false, code:'NO_STATION', message:'50m以内に駅が見つかりません。' };
+  const cand = pickStationWithinRadius(stations, loc, 100);
+  if (!cand) return { ok:false, code:'NO_STATION', message:'100m以内に駅が見つかりません。' };
 
   const alightId = cand.st.stationId;
   if (alightId === boardedId) return { ok:false, code:'SAME_STATION', message:'同一駅での乗車・降車はできません。' };

@@ -42,7 +42,73 @@ a { color: inherit; }
 .hint { font-size: 12px; color: #555; }
 .banner { padding: 10px 12px; border-radius: 10px; background: #fff3cd; border: 1px solid #ffe69c; }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 14px; background: rgba(17,17,17,.92); color: #fff; padding: 10px 12px; border-radius: 10px; max-width: 92vw; }
-.mapWrap { height: 62vh; min-height: 420px; border-radius: 12px; overflow: hidden; border: 1px solid #ddd; background:#eee; }
+.mapWrap { height: min(70vh, 640px); min-height: 360px; max-height: 720px; border-radius: 12px; overflow: hidden; border: 1px solid #ddd; background:#eee; position: relative; }
+
+/* On phones, allocate more vertical space for the map.
+   100dvh is used to avoid iOS Safari URL-bar jumps. */
+@media (max-width: 600px) {
+  .mapWrap { height: calc(100dvh - 240px); max-height: none; }
+}
+
+.playFab {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  right: auto;
+
+  /* Googleマップ下部リンク類に被らないよう持ち上げ */
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 88px);
+
+  z-index: 7;
+
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+
+  width: min(520px, calc(100% - 24px));
+  pointer-events: none; /* 地図操作を邪魔しない */
+}
+
+/* ボタンは押せるように戻す */
+.playFab > * , .playFab button {
+  pointer-events: auto;
+}
+
+.fabBtn {
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  border: 2px solid #000;
+  background: rgba(255,255,255,0.92);
+  box-shadow: 0 8px 20px rgba(0,0,0,0.12);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+
+.fabBtn.primary {
+  width: 60px;
+  height: 60px;
+  border-radius: 16px;
+}
+
+.fabBtn img {
+  width: 26px;
+  height: 26px;
+}
+
+.fabBtn.primary img {
+  width: 30px;
+  height: 30px;
+}
+
+.fabBtn:disabled {
+  opacity: 0.45;
+  box-shadow: none;
+}
 .overlay { position: absolute; top: 10px; left: 10px; right: 10px; display: flex; gap: 10px; justify-content: space-between; pointer-events: none; }
 .overlay > div { pointer-events: auto; }
 .pill { background: rgba(255,255,255,.95); border: 1px solid rgba(0,0,0,.12); border-radius: 999px; padding: 8px 10px; font-size: 13px; }
@@ -204,3 +270,47 @@ body::after {
 .installGuideList { margin: 6px 0 0 18px; padding: 0; font-size: 14px; line-height: 1.55; }
 .installGuidePara { font-size: 14px; line-height: 1.55; margin: 6px 0 0; }
 .installGuideNote { font-size: 13px; line-height: 1.55; color: #444; margin: 12px 0 0; }
+
+/* --- Play page icon helpers --- */
+.btnIconImg {
+  width: 18px;
+  height: 18px;
+  display: inline-block;
+  vertical-align: -3px;
+  margin-right: 6px;
+}
+
+.btnIconOnly {
+  width: 18px;
+  height: 18px;
+  display: inline-block;
+  vertical-align: -3px;
+}
+
+/* ===== Play page: time/score (outside map) ===== */
+.playTimeScore {
+  display: flex;
+  gap: 12px;
+  margin: 10px 0 6px;
+}
+.playTimeScoreBox {
+  flex: 1;
+  border: 1px solid #ddd;
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: #fff;
+}
+.playTimeScoreLabel {
+  font-size: 12px;
+  color: #555;
+}
+.playTimeScoreValue {
+  margin-top: 2px;
+  font-size: 32px;
+  font-weight: 800;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0.03em;
+}
+@media (max-width: 600px) {
+  .playTimeScoreValue { font-size: 36px; }
+}

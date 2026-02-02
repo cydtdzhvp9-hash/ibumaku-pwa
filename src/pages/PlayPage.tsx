@@ -1,3 +1,4 @@
+import { MarkerClusterer } from "@googlemaps/markerclusterer";
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { attachMap, parkMap, getMap } from '../map/mapSingleton';
@@ -17,7 +18,7 @@ import {
   jrAlight,
   jrBoard,
 } from '../logic/game';
-import { MarkerClusterer } from '@googlemaps/markerclusterer';
+// NOTE: Marker clustering was removed to avoid introducing a new npm dependency.
 
 // もし環境により `google` 型が解決されない場合の保険（あっても害は少ない）
 declare const google: any;
@@ -25,6 +26,10 @@ declare const google: any;
 export default function PlayPage() {
   const nav = useNavigate();
   const online = useOnline();
+
+  // Public assets are served under Vite's BASE_URL ("/" in dev, "/ibumaku-pwa/" on GitHub Pages).
+  const baseUrl = (import.meta.env.BASE_URL as string) || '/';
+  const iconSrc = (file: string) => `${baseUrl}playicons/${file}`;
 
   const progress = useGameStore((s) => s.progress);
   const setProgress = useGameStore((s) => s.setProgress);
@@ -35,7 +40,6 @@ export default function PlayPage() {
   useEffect(() => {
     progressRef.current = progress;
   }, [progress]);
-
   const startCenterAppliedRef = useRef(false);
 
   const [spots, setSpots] = useState<Spot[]>([]);
@@ -51,8 +55,7 @@ export default function PlayPage() {
   }, []);
 
   // ===== Debug UI state =====
-  const [useVirtualLoc, setUseVirtualLoc] = useState(false);
-  const [debugOpen, setDebugOpen] = useState(false);
+  const [useVirtualLoc, setUseVirtualLoc] = useState(false);  const [debugOpen, setDebugOpen] = useState(false);
   const useVirtualRef = useRef(false); // 「関数内で最新値を参照」用
 
   useEffect(() => {
@@ -84,6 +87,9 @@ useEffect(() => {
 }, [noticeOpen]);
 
 const toastTimerRef = useRef<number | null>(null);
+// Spot marker refs for diff updates & clustering
+const spotMarkerByIdRef = useRef<Map<string, any>>(new Map());
+const clustererRef = useRef<MarkerClusterer | null>(null);
 const closeNotice = () => {
   if (toastTimerRef.current != null) {
     window.clearTimeout(toastTimerRef.current);
@@ -162,7 +168,6 @@ const findNearestStation = (loc: { lat: number; lng: number }) => {
   // ===== Refs =====
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<any>(null);
-  const clustererRef = useRef<MarkerClusterer | null>(null);
   const markersRef = useRef<any[]>([]);
   const cpDragListenersRef = useRef<any[]>([]);
   const infoWindowRef = useRef<any>(null);
@@ -609,13 +614,6 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
       }
       userMarkerRef.current = null;
 
-      try {
-        clustererRef.current?.clearMarkers();
-      } catch {
-        /* noop */
-      }
-      clustererRef.current = null;
-
       for (const m of markersRef.current) {
         try {
           m.map = null;
@@ -690,6 +688,21 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
     }
     cpDragListenersRef.current = [];
 
+    // Clear previous clusterer (if any) to avoid leaving markers visible.
+    if (clustererRef.current) {
+      try {
+        clustererRef.current.clearMarkers();
+      } catch {
+        /* noop */
+      }
+      try {
+        (clustererRef.current as any).setMap?.(null);
+      } catch {
+        /* noop */
+      }
+      clustererRef.current = null;
+    }
+
     for (const m of markersRef.current) {
       try {
         m.map = null;
@@ -698,13 +711,6 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
       }
     }
     markersRef.current = [];
-
-    try {
-      clustererRef.current?.clearMarkers();
-    } catch {
-      /* noop */
-    }
-    clustererRef.current = null;
 
     const cpSet = new Set(progress.cpSpotIds);
     const reachedCp = new Set(progress.reachedCpIds);
@@ -879,7 +885,7 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
               lng: p2.lng,
               nearestM: best ? Math.round(best.d) : null,
             });
-            pushNotice('error', '近くにスポットがないためCPを移動できません（300m以内が必要）', 4000);
+            pushNotice('error', '近くにチェックインがないためCPを移動できません（300m以内が必要）', 4000);
             return;
           }
 
@@ -890,7 +896,7 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
               /* noop */
             }
             pushLog('CP_DRAG_DUP', `★CP${i + 1} duplicate -> revert`, { targetId: best!.sp.ID, name: best!.sp.Name });
-            pushNotice('error', 'そのスポットは既に別のCPに設定されています', 4000);
+            pushNotice('error', 'そのチェックインは既に別のCPに設定されています', 4000);
             return;
           }
 
@@ -931,6 +937,7 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
     markersRef.current.push(...cpMarkers);
 
     // Spot markers (cluster)
+    spotMarkerByIdRef.current = new Map();
     const spotMarkers: any[] = spots
       .filter((sp) => !cpSet.has(sp.ID))
       .map((sp) => {
@@ -959,30 +966,34 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
           /* noop */
         }
 
+        spotMarkerByIdRef.current.set(sp.ID, m);
         return m;
       });
 
-    clustererRef.current = new MarkerClusterer({
-      map,
-      markers: spotMarkers,
-      renderer: {
-        render: ({ position }: any) => {
-          return new google.maps.Marker({
-            position,
-            icon: {
-              path: google.maps.SymbolPath.CIRCLE,
-              scale: 10,
-              fillColor: '#333',
-              fillOpacity: 0.85,
-              strokeColor: '#fff',
-              strokeWeight: 2,
-            },
-            label: undefined,
-            zIndex: Number(google.maps.Marker.MAX_ZINDEX) + 1,
-          });
-        },
-      } as any,
-    });
+    // Cluster (past behavior): show clustered spots as a plain dot (no count label)
+    if (spotMarkers.length > 0) {
+      clustererRef.current = new MarkerClusterer(
+        {
+          map,
+          markers: spotMarkers as any,
+          renderer: {
+            render: ({ count, position }: any) =>
+              new google.maps.Marker({
+                position,
+                icon: {
+                  path: google.maps.SymbolPath.CIRCLE,
+                  fillColor: '#333',
+                  fillOpacity: 0.95,
+                  strokeColor: '#ffffff',
+                  strokeWeight: 2,
+                  scale: 10,
+                },
+                zIndex: Number(google.maps.Marker.MAX_ZINDEX) + count,
+              }),
+          } as any,
+        } as any
+      );
+    }
   }, [spots, progress, DEBUG_TOOLS]);
 
   // ===== Check-in actions =====
@@ -1097,7 +1108,7 @@ try {
   if (addedSpotIds[0]) {
     const sp = findSpotById(addedSpotIds[0]);
     const name = sp?.Name ?? addedSpotIds[0];
-    pushNotice('success', `スポット達成：${name}（${fmtDelta(scoreDelta)}）`, 2800);
+    pushNotice('success', `チェックイン達成：${name}（${fmtDelta(scoreDelta)}）`, 2800);
   } else {
     // 既に達成済み等で追加が無いケース（通常は起きにくい）
     pushNotice('success', r.message, 2800);
@@ -1198,7 +1209,7 @@ try {
   if (addedSpotIds[0]) {
     const sp = findSpotById(addedSpotIds[0]);
     const name = sp?.Name ?? addedSpotIds[0];
-    pushNotice('success', `スポット達成：${name}（${fmtDelta(scoreDelta)}）`, 2800);
+    pushNotice('success', `チェックイン達成：${name}（${fmtDelta(scoreDelta)}）`, 2800);
   } else {
     // 既に達成済み等で追加が無いケース（通常は起きにくい）
     pushNotice('success', r.message, 2800);
@@ -1304,7 +1315,7 @@ try {
   if (addedSpotIds[0]) {
     const sp = findSpotById(addedSpotIds[0]);
     const name = sp?.Name ?? addedSpotIds[0];
-    pushNotice('success', `スポット達成：${name}（${fmtDelta(scoreDelta)}）`, 2800);
+    pushNotice('success', `チェックイン達成：${name}（${fmtDelta(scoreDelta)}）`, 2800);
   } else {
     // 既に達成済み等で追加が無いケース（通常は起きにくい）
     pushNotice('success', r.message, 2800);
@@ -1409,11 +1420,204 @@ window.setTimeout(() => nav('/result'), 250);
   const mm = Math.floor(rem / 60);
   const ss = rem % 60;
 
+  // Latest known location fix (kept in a ref and updated by watchPosition).
+  // This component re-renders on a timer (nowMs), so reading from the ref here is OK.
+  const currentFix = lastFixRef.current;
+
+  // JR ride state is represented by whether we have a boardedStationId.
+  const isJrBoarded = !!progress?.boardedStationId;
+
+  // --- Map overlay button logic ---
+  // Decide whether the primary check-in button should be a Spot/CP check-in or a Goal check-in.
+  // Priority: Spot/CP (current logic) > Goal (only when NO_SPOT_NEARBY and goal is within range).
+  const spotCheckPreview = useMemo(() => {
+    if (!online) return null;
+    if (!progress) return null;
+    if (!currentFix) return null;
+
+    const fix = currentFix;
+    const loc = { lat: fix.lat, lng: fix.lng };
+    return checkInSpotOrCp(progress, loc, fix.accuracy, spots);
+  }, [online, progress, currentFix, spots, nowMs]);
+
+  const goalCheckPreview = useMemo(() => {
+    if (!online) return null;
+    if (!progress) return null;
+    if (!currentFix) return null;
+
+    const fix = currentFix;
+    const loc = { lat: fix.lat, lng: fix.lng };
+    return goalCheckIn(progress, loc, fix.accuracy);
+  }, [online, progress, currentFix, nowMs]);
+
+    const hasUnvisitedWithinRadius = useMemo(() => {
+    if (!progress) return false;
+    if (!currentFix) return false;
+
+    const loc = { lat: currentFix.lat, lng: currentFix.lng };
+    const visited = new Set(progress.visitedSpotIds);
+    const reachedCp = new Set(progress.reachedCpIds);
+    const cpIds = new Set(progress.cpSpotIds);
+
+    for (const s of spots) {
+      const d = haversineMeters(loc, { lat: s.Latitude, lng: s.Longitude });
+      if (d > CHECKIN_RADIUS_M) continue;
+
+      const isCp = cpIds.has(s.ID);
+      if (isCp) {
+        if (!reachedCp.has(s.ID)) return true;
+      } else {
+        if (!visited.has(s.ID)) return true;
+      }
+    }
+    return false;
+  }, [progress, currentFix, spots, nowMs]);
+
+  const spotCode = useMemo(() => {
+    if (!spotCheckPreview) return null;
+    return spotCheckPreview.ok ? null : spotCheckPreview.code;
+  }, [spotCheckPreview]);
+
+  const goalCode = useMemo(() => {
+    if (!goalCheckPreview) return null;
+    return goalCheckPreview.ok ? null : goalCheckPreview.code;
+  }, [goalCheckPreview]);
+
+  const isGoalOnlyMode = useMemo(() => {
+    const goalOk = !!goalCheckPreview?.ok;
+    if (!goalOk) return false;
+    // ゴール範囲内 かつ 範囲内に未チェックインのチェックイン/CPが無い場合は「旗」ボタンでゴールチェックイン
+    return !hasUnvisitedWithinRadius;
+  }, [goalCheckPreview, hasUnvisitedWithinRadius]);
+
+
+  const jrButtonsDisabled = useMemo(() => {
+    if (!online) return true;
+    if (!progress) return true;
+    if (!currentFix) return true;
+    if (checkInBusy) return true;
+    return false;
+  }, [online, progress, currentFix, checkInBusy]);
+
+
+  const JR_BOARD_UI_RADIUS_M = 50;
+
+  const canJrBoardHere = useMemo(() => {
+    if (!currentFix) return false;
+    if (!stations || stations.length === 0) return false;
+    const loc = { lat: currentFix.lat, lng: currentFix.lng };
+    for (const st of stations) {
+      const d = haversineMeters(loc, { lat: st.lat, lng: st.lng });
+      if (d <= JR_BOARD_UI_RADIUS_M) return true;
+    }
+    return false;
+  }, [currentFix, stations]);
+
+
+  const jrButtonDisabled = useMemo(() => {
+    if (isJrBoarded) {
+      // 降車：距離では無効化しない（クールダウン等のみ）
+      return jrButtonsDisabled || cooldownLeft > 0;
+    }
+    // 乗車：駅（50m以内）にいない時は無効化
+    return jrButtonsDisabled || cooldownLeft > 0 || !canJrBoardHere;
+  }, [isJrBoarded, jrButtonsDisabled, cooldownLeft, canJrBoardHere]);
+  const primaryCheckDisabled = useMemo(() => {
+    if (!online) return true;
+    if (!progress) return true;
+    if (!currentFix) return true;
+    if (checkInBusy) return true;
+    if (isGoalOnlyMode) return !goalCheckPreview?.ok;
+    // 範囲内に未チェックインが無い場合はスポットチェックインを無効化
+    if (!hasUnvisitedWithinRadius) return true;
+    return !spotCheckPreview?.ok;
+  }, [online, progress, currentFix, checkInBusy, isGoalOnlyMode, spotCheckPreview, goalCheckPreview, hasUnvisitedWithinRadius]);
+
+  // NOTE: Use BASE_URL-aware path so icons work under sub-path hosting (e.g. /ibumaku-pwa/...).
+  const primaryCheckIcon = isGoalOnlyMode ? iconSrc('goal.svg') : iconSrc('checkin.svg');
+  const primaryCheckTitle = isGoalOnlyMode ? 'ゴール' : 'チェックイン';
+  const primaryCheckLabel = isGoalOnlyMode ? 'チェックイン' : 'チェックイン';
+
+  const onPrimaryCheck = async () => {
+    if (isGoalOnlyMode) {
+      await onGoal();
+    } else {
+      await onCheckIn();
+    }
+  };
+
+  const primaryHint = useMemo(() => {
+    if (!online) return 'オフライン/圏外のためチェックインできません。';
+    if (!progress) return 'ゲームデータが読み込めていません。';
+    if (!currentFix) return 'GPS位置が未取得です。';
+    if (currentFix.accuracy > MAX_ACCURACY_M)
+      return `GPS精度が低いです（accuracy=${Math.round(currentFix.accuracy)}m）。精度が上がってからお試しください。`;
+
+    if (isGoalOnlyMode && goalCheckPreview?.ok) {
+      return 'ゴール範囲内です。旗ボタンでゴールチェックインできます。';
+    }
+    if (spotCheckPreview?.ok) {
+      return 'チェックイン可能です。';
+    }
+
+    if (spotCode === 'IN_TRAIN') {
+      return '乗車中は駅チェックインのみ可能です。降車後に再試行してください。';
+    }
+    if (spotCode === 'NO_SPOT') {
+      if (goalCode === 'NOT_AT_GOAL') {
+        return '近くに未チェックインのチェックイン/CPがありません。ゴール地点の50m以内でゴールチェックインしてください。';
+      }
+      return '近くに未チェックインのチェックイン/CPがありません。';
+    }
+
+    // fallback
+    return spotCheckPreview?.message ?? 'チェックインできません。';
+  }, [online, progress, currentFix, isGoalOnlyMode, spotCheckPreview, goalCheckPreview, spotCode, goalCode]);
+
+  const fabStackStyle: React.CSSProperties = {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    gap: 6,
+  };
+  const fabStackStyleCheckin: React.CSSProperties = {
+    ...fabStackStyle,
+  };
+  const fabLabelStyle: React.CSSProperties = {
+    fontSize: 11,
+    fontWeight: 800,
+    lineHeight: 1.1,
+    padding: '2px 6px',
+    borderRadius: 999,
+    background: 'rgba(255,255,255,0.92)',
+    border: '1px solid rgba(0,0,0,0.12)',
+    color: '#111',
+    userSelect: 'none',
+    whiteSpace: 'nowrap',
+    marginTop: 8,
+    pointerEvents: 'none',
+  };
+
+  const labelStyleFor = (disabled: boolean): React.CSSProperties => ({
+    ...fabLabelStyle,
+    color: disabled ? 'rgba(0,0,0,0.35)' : '#111',
+  });
+
   return (
     <>
       <div className="card">
         <h3>プレイ</h3>
         {!online && <div className="banner">オフライン/圏外のためチェックインできません。</div>}
+        <div className="playTimeScore">
+          <div className="playTimeScoreBox">
+            <div className="playTimeScoreLabel">残り</div>
+            <div className="playTimeScoreValue">{mm}:{ss}</div>
+          </div>
+          <div className="playTimeScoreBox">
+            <div className="playTimeScoreLabel">スコア</div>
+            <div className="playTimeScoreValue">{String(progress?.score ?? 0).padStart(5, "0")}</div>
+          </div>
+        </div>
         <div className="hint">
           CP達成：{progress ? progress.reachedCpIds.length : 0}/{progress ? progress.cpSpotIds.length : 0}
         </div>
@@ -1425,37 +1629,80 @@ window.setTimeout(() => nav('/result'), 250);
         <div className="mapWrap" ref={mapEl} />
 
         {/* 上段中央：残り時間（左）＋得点（右） */}
+
+        {/* Floating action buttons (map overlay)
+            指示：画面下中央に「現在地戻る」。左に「チェックインチェックイン」。右に「乗車」「降車」。 */}
         <div
-          className="overlay"
+          className="playFab"
           style={{
             position: 'absolute',
-            top: 10,
             left: '50%',
             transform: 'translateX(-50%)',
-            display: 'flex',
+            // Googleマップ下部のリンク類に被りにくいよう少し持ち上げる
+            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 72px)',
+            zIndex: 7,
+            width: 'min(520px, calc(100% - 24px))',
+            display: 'grid',
+            gridTemplateColumns: '1fr auto 1fr',
+            alignItems: 'center',
             gap: 10,
-            zIndex: 6,
             pointerEvents: 'none',
           }}
         >
-          <div className="pill">残り {mm}:{String(ss).padStart(2, '0')}</div>
-          <div className="pill">得点 {progress?.score ?? 0}</div>
-        </div>
+          {/* 左：チェックイン/ゴールチェックイン */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', pointerEvents: 'auto' }}>
+            <div style={fabStackStyleCheckin}>
+              <button
+                className="fabBtn fabPrimary"
+                onClick={onPrimaryCheck}
+                aria-label={primaryCheckTitle}
+                title={primaryCheckTitle}
+                disabled={primaryCheckDisabled}
+              >
+                <img className="fabIcon" src={primaryCheckIcon} alt="" aria-hidden="true" />
+              </button>
+              <div style={labelStyleFor(primaryCheckDisabled)}>{primaryCheckLabel}</div>
+            </div>
+          </div>
+{/* 中央：現在地 */}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, pointerEvents: 'auto' }}>
+            <div style={fabStackStyle}>
+              <button
+                className="fabBtn"
+                onClick={onPanToCurrent}
+                aria-label="現在地に戻る"
+                title="現在地に戻る"
+                disabled={!progress || !currentFix}
+              >
+                <img className="fabIcon" src={iconSrc('locate.svg')} alt="" aria-hidden="true" />
+              </button>
+              <div style={labelStyleFor(!progress || !currentFix)}>現在地</div>
+            </div>
+          </div>
 
-        {/* 下段中央：現在地 */}
-        <button
-          className="btn"
-          onClick={onPanToCurrent}
-          style={{
-            position: 'absolute',
-            left: '50%',
-            bottom: 12,
-            transform: 'translateX(-50%)',
-            zIndex: 6,
-          }}
-        >
-          現在地
-        </button>
+          {/* 右：乗車/降車チェックイン */}
+          <div style={{ display: 'flex', justifyContent: 'flex-start', gap: 10, pointerEvents: 'auto' }}>
+            {progress?.config.jrEnabled && (
+              <div style={fabStackStyle}>
+                <button
+                  className="fabBtn"
+                  onClick={isJrBoarded ? onJrAlight : onJrBoard}
+                  aria-label={isJrBoarded ? 'JR 降車チェックイン' : 'JR 乗車チェックイン'}
+                  title={isJrBoarded ? 'JR 降車チェックイン' : 'JR 乗車チェックイン'}
+                  disabled={jrButtonDisabled}
+                >
+                  <img
+                    className="fabIcon"
+                    src={iconSrc(isJrBoarded ? 'jr_off.svg' : 'jr_on.svg')}
+                    alt=""
+                    aria-hidden="true"
+                  />
+                </button>
+                <div style={labelStyleFor(jrButtonDisabled)}>{isJrBoarded ? '降車' : '乗車'}</div>
+              </div>
+            )}
+          </div>
+        </div>
 
         {/* DBGボタン（左下） */}
         {DEBUG_TOOLS && (
@@ -1496,7 +1743,7 @@ window.setTimeout(() => nav('/result'), 250);
                 {useVirtualLoc ? '仮想現在地: ON' : '仮想現在地: OFF'}
               </button>
               <button className="btn" onClick={debugSetVirtualFromCurrent} disabled={!useVirtualLoc}>
-                仮想を現在地へ
+                仮想を現在地
               </button>
               <button className="btn" onClick={() => debugShiftTimerMin(-5)}>タイマー -5分</button>
               <button className="btn" onClick={() => debugShiftTimerMin(+5)}>タイマー +5分</button>
@@ -1508,7 +1755,7 @@ window.setTimeout(() => nav('/result'), 250);
             <div style={{ marginTop: 10, fontSize: 12, opacity: 0.9 }}>
               ・仮想現在地ON時：マップをタップで仮想位置を配置／VLOCをドラッグで移動  
               <br />
-              ・CPは（DBG時のみ）ドラッグ可：近くのスポットに吸着（300m以内）、重複CPは禁止
+              ・CPは（DBG時のみ）ドラッグ可：近くのチェックインに吸着（300m以内）、重複CPは禁止
             </div>
 
             <hr style={{ margin: '10px 0' }} />
@@ -1531,32 +1778,14 @@ window.setTimeout(() => nav('/result'), 250);
 
       <div style={{ height: 12 }} />
       <div className="card">
-        <h3>チェックイン</h3>
-        <div className="actions">
-          <button className="btn primary" onClick={onCheckIn} disabled={checkInBusy}>
-            {checkInBusy ? 'チェックイン中…' : 'スポット/CP チェックイン'}
-          </button>
-          {progress?.config.jrEnabled && (
-            <>
-              <button className="btn" onClick={onJrBoard} disabled={checkInBusy || cooldownLeft > 0}>
-                乗車チェックイン
-              </button>
-              <button className="btn" onClick={onJrAlight} disabled={checkInBusy || cooldownLeft > 0}>
-                降車チェックイン
-              </button>
-            </>
-          )}
-          <button className="btn" onClick={onGoal} disabled={checkInBusy}>
-            ゴールチェックイン
-          </button>
-        </div>
-
+        <h3>操作ヒント</h3>
+        <div className="hint">{primaryHint}</div>
         <div className="hint" style={{ marginTop: 8 }}>
-          ・到着判定：50m以内／accuracy≦100m／複数候補時（案A）：最近傍→同率ならScore高→それでも同率ならID昇順
+          ・到着判定：50m以内／accuracy≦100m／複数候補時：最近傍→同率ならScore高→それでも同率ならID昇順
         </div>
         {progress?.config.jrEnabled && (
           <div className="hint">
-            ・JR：成功後60秒は無反応（ボタンはグレーダウン）／同一駅での乗車・降車は禁止／駅ポイントは同じ駅を1ゲーム1回まで
+            ・JR：成功後60秒は無反応／同一駅での乗車・降車は禁止／駅ポイントは同じ駅を1ゲーム1回まで
           </div>
         )}
       </div>
