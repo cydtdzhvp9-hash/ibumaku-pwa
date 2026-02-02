@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- JR boarding: train-front half + running person + arrow -->
+  <g stroke="#1f6b2e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <!-- arrow toward train -->
+    <path d="M8 14h22"/>
+    <path d="M26 10l6 4-6 4"/>
+
+    <!-- running person (left) -->
+    <circle cx="18" cy="26" r="4.6" fill="#1f6b2e"/>
+    <path d="M18 29l-2 9"/>
+    <path d="M16 38l-6 6"/>
+    <path d="M16 38l9 5"/>
+    <path d="M18 31l9 3"/>
+    <path d="M15 33l-7 3"/>
+
+
+<g transform="translate(96 0) scale(-1 1)">
+    <!-- train front (right), half-visible -->
+    <!-- outer silhouette: flat on left, rounded on right -->
+    <path d="M36 14H52Q60 14 60 22V38Q60 46 52 46H36"/>
+    <!-- front window -->
+    <path d="M36 20h16v12H36z"/>
+    <!-- door line / center seam -->
+    <path d="M36 14v32"/>
+    <!-- headlight -->
+    <path d="M50 44a2 2 0 1 1 0.01 0z"/>
+    <!-- coupler hint -->
+    <path d="M56 48v4"/>
+
+
+    <!-- rail -->
+    <path d="M34 49h28"/>
+    <path d="M34 54h28"/>
+    <path d="M42 51h6"/>
+</g>
+
+  </g>
+</svg>

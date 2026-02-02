@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <!-- JR alighting: train-front half + running person + arrow -->
+  <g stroke="#1f6b2e" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <!-- arrow away from train (to the right) -->
+    <path d="M34 14h22"/>
+    <path d="M52 10l6 4-6 4"/>
+
+<g transform="translate(30 0) scale(-1 1)">
+    <!-- train front (left), half-visible -->
+    <path d="M28 14H12Q4 14 4 22V38Q4 46 12 46H28"/>
+    <path d="M28 20H12V32H28Z"/>
+    <path d="M28 14v32"/>
+    <path d="M14 44a2 2 0 1 0-0.01 0z"/>
+    <path d="M8 48v4"/>
+
+
+    <!-- rail -->
+    <path d="M2 49h28"/>
+    <path d="M2 54h28"/>
+    <path d="M16 51h6"/>
+</g>
+
+
+    <!-- running person (right, moving away) -->
+    <circle cx="46" cy="26" r="4.6" fill="#1f6b2e"/>
+    <path d="M46 29l-2 9"/>
+    <path d="M44 38l-6 6"/>
+    <path d="M44 38l9 5"/>
+    <path d="M46 31l9 3"/>
+    <path d="M43 33l-7 3"/>
+
+  </g>
+</svg>
