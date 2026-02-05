@@ -387,6 +387,7 @@ const onStartGame = async () => {
                 value={config.durationMin}
                 onChange={(e) => setConfig((c) => ({ ...c, durationMin: Number(e.target.value) }))}
               >
+                <option key="unlimited" value={0}>無制限</option>
                 {durationOptions.map((m) => (
                   <option key={m} value={m}>
                     {m}分

@@ -16,6 +16,7 @@ export const useGameStore = create<GameState>((set, get) => ({
   plannedEndMs: () => {
     const p = get().progress;
     if (!p) return undefined;
+    if (p.config.durationMin === 0) return undefined;
     return p.startedAtMs + p.config.durationMin * 60_000;
   },
   remainingSec: (nowMs) => {
