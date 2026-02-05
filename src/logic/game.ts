@@ -124,6 +124,7 @@ export function startNewGame(resolvedConfig: GameConfig & { start: LatLng; goal:
   const t = nowMs();
   return {
     startedAtMs: t,
+    lastUpdatedAtMs: t,
     config: resolvedConfig,
     cpSpotIds,
     reachedCpIds: [],
@@ -187,6 +188,7 @@ export function selectCpSpotsMVP(allJudgeSpots: Spot[], config: GameConfig & { s
 export function checkInSpotOrCp(progress: GameProgress, loc: LatLng, accuracy: number, judgeSpots: Spot[]): CheckInResult {
   if (progress.endedAtMs) return { ok:false, code:'GAME_ENDED', message:'ゲームは終了しています。' };
   if (accuracy > MAX_ACCURACY_M) return { ok:false, code:'ACCURACY_TOO_BAD', message:`accuracyが大きすぎます（${Math.round(accuracy)}m）。100m以内になるまで待ってください。` };
+  const t = nowMs();
 
   // Dense-spot rule: allow check-in for spots clustered within 3m (inside 50m).
   const cand = pickSpotCandidateWithDenseCluster(progress, loc, judgeSpots, DENSE_SPOT_DISTANCE_M);
@@ -213,10 +215,11 @@ export function checkInSpotOrCp(progress: GameProgress, loc: LatLng, accuracy: n
 
   const next: GameProgress = {
     ...progress,
+    lastUpdatedAtMs: t,
     visitedSpotIds: Array.from(visited),
     reachedCpIds: Array.from(reachedCp),
     score: progress.score + add,
-    lastLocation: { lat: loc.lat, lng: loc.lng, accuracy, atMs: nowMs() }
+    lastLocation: { lat: loc.lat, lng: loc.lng, accuracy, atMs: t }
   };
 
   return {
@@ -257,6 +260,7 @@ export function jrBoard(progress: GameProgress, loc: LatLng, accuracy: number, s
   const stationId = cand.st.stationId;
   const next: GameProgress = {
     ...progress,
+    lastUpdatedAtMs: t,
     boardedStationId: stationId,
     visitedStationEvents: [...progress.visitedStationEvents, { type:'BOARD', stationId, atMs: t }],
     cooldownUntilMs: t + JR_COOLDOWN_SEC * 1000,
@@ -317,6 +321,7 @@ export function jrAlight(progress: GameProgress, loc: LatLng, accuracy: number, 
 
   const next: GameProgress = {
     ...progress,
+    lastUpdatedAtMs: t,
     score: progress.score + jrScore,
     boardedStationId: undefined,
     // keep legacy usedStationIds as-is for backward compatibility
@@ -337,6 +342,7 @@ export function jrAlight(progress: GameProgress, loc: LatLng, accuracy: number, 
 export function goalCheckIn(progress: GameProgress, loc: LatLng, accuracy: number): CheckInResult {
   const t = nowMs();
   if (progress.endedAtMs) return { ok:false, code:'GAME_ENDED', message:'ゲームは終了しています。' };
+  if (progress.config.durationMin === 0) return { ok:false, code:'UNLIMITED_NO_GOAL', message:'無制限モードではゴールチェックインはできません。' };
   if (accuracy > MAX_ACCURACY_M) return { ok:false, code:'ACCURACY_TOO_BAD', message:`accuracyが大きすぎます（${Math.round(accuracy)}m）。100m以内になるまで待ってください。` };
   // check radius to goal
   const d = haversineMeters(loc, progress.config.goal);
@@ -349,6 +355,7 @@ export function goalCheckIn(progress: GameProgress, loc: LatLng, accuracy: numbe
 
   const next: GameProgress = {
     ...progress,
+    lastUpdatedAtMs: t,
     endedAtMs: t,
     endReason: 'GOAL',
     penalty,

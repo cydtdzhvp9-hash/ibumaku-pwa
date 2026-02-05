@@ -44,6 +44,7 @@ export default function PlayPage() {
 
   const [spots, setSpots] = useState<Spot[]>([]);
   const [stations, setStations] = useState<Station[]>([]);
+  const [endConfirmOpen, setEndConfirmOpen] = useState(false);
   const [checkInBusy, setCheckInBusy] = useState(false);
 
   // ===== Debug Tools gate =====
@@ -199,9 +200,10 @@ const findNearestStation = (loc: { lat: number; lng: number }) => {
   };
 
 const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: any) => {
-  setProgress(p);
+  const p2 = { ...p, lastUpdatedAtMs: Date.now() };
+  setProgress(p2);
   if (logType) pushLog(logType, msg, logData);
-  void saveGame(p).catch(() => {
+  void saveGame(p2).catch(() => {
     // eslint-disable-next-line no-console
     console.warn('saveGame failed');
   });
@@ -216,6 +218,15 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
     pushLog('ABANDONED', '途中離脱扱いでゲーム終了', { now });
     pushNotice('error', 'タイムアップから1時間を超えたため、途中離脱扱いでゲーム終了しました。', 6000);
     nav('/');
+  };
+
+  const endGameNow = async () => {
+    if (!progress) return;
+    const now = Date.now();
+    const ended = { ...progress, endedAtMs: now, endReason: 'MANUAL' as const };
+    applyProgressUpdate(ended, 'プレイ終了', 'MANUAL_END', { now });
+    pushNotice('info', 'プレイを終了しました。', 4000);
+    nav('/result');
   };
 
   const upsertUserMarker = (map: any, pos: { lat: number; lng: number }) => {
@@ -509,7 +520,7 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
 
       // If game already ended, route away from Play.
       if (g.endedAtMs) {
-        if ((g as any).endReason === 'ABANDONED') {
+        if ((g as any).endReason === 'ABANDONED' || (g as any).endReason === 'ARCHIVE') {
           pushNotice('error', 'ゲームは途中離脱扱いで終了しています。', 4000);
           nav('/');
           return;
@@ -520,17 +531,35 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
         return;
       }
 
-      // If overtime grace has expired, treat as abandoned (no result / no resume)
-      const plannedEnd = g.startedAtMs + (g.config?.durationMin ?? 0) * 60_000;
-      const graceEnd = plannedEnd + 60 * 60_000;
-      const now = Date.now();
-      if (now > graceEnd) {
-        const abandoned = { ...g, endedAtMs: now, endReason: 'ABANDONED' as const };
-        setProgress(abandoned);
-        await saveGame(abandoned);
-        pushNotice('error', 'タイムアップから1時間を超えたため、途中離脱扱いでゲーム終了しました。', 6000);
-        nav('/');
-        return;
+      // If the game is not ended, enforce automatic end rules.
+      if (!g.endedAtMs) {
+        const now = Date.now();
+
+        // Unlimited mode: archive unfinished games when there is no update for 7 days.
+        if ((g.config?.durationMin ?? 0) === 0) {
+          const last = (g.lastUpdatedAtMs ?? g.startedAtMs);
+          const archiveAt = last + 7 * 24 * 60 * 60_000;
+          if (now >= archiveAt) {
+            const archived = { ...g, endedAtMs: now, endReason: 'ARCHIVE' as const };
+            setProgress(archived);
+            await saveGame(archived);
+            pushNotice('error', '7日間更新がないため、未完了としてアーカイブしました。', 6000);
+            nav('/');
+            return;
+          }
+        } else {
+          // Limited mode: If overtime grace has expired, treat as abandoned (no result / no resume)
+          const plannedEnd = g.startedAtMs + (g.config?.durationMin ?? 0) * 60_000;
+          const graceEnd = plannedEnd + 60 * 60_000;
+          if (now > graceEnd) {
+            const abandoned = { ...g, endedAtMs: now, endReason: 'ABANDONED' as const };
+            setProgress(abandoned);
+            await saveGame(abandoned);
+            pushNotice('error', 'タイムアップから1時間を超えたため、途中離脱扱いでゲーム終了しました。', 6000);
+            nav('/');
+            return;
+          }
+        }
       }
       setProgress(g);
       const s = await getJudgeTargetSpots();
@@ -813,8 +842,13 @@ const applyProgressUpdate = (p: any, msg: string, logType?: string, logData?: an
 
     // START/GOAL
     const startM = new AdvancedMarker({ map, position: progress.config.start, content: mkLabel('START') });
-    const goalM = new AdvancedMarker({ map, position: progress.config.goal, content: mkLabel('GOAL') });
-    markersRef.current.push(startM, goalM);
+    markersRef.current.push(startM);
+
+    // GOAL is not shown in unlimited mode.
+    if (progress.config.durationMin !== 0) {
+      const goalM = new AdvancedMarker({ map, position: progress.config.goal, content: mkLabel('GOAL') });
+      markersRef.current.push(goalM);
+    }
 
     // CP markers
     const cpMarkers: any[] = [];
@@ -1420,6 +1454,8 @@ window.setTimeout(() => nav('/result'), 250);
   const mm = Math.floor(rem / 60);
   const ss = rem % 60;
 
+  const isUnlimited = progress?.config.durationMin === 0;
+
   // Latest known location fix (kept in a ref and updated by watchPosition).
   // This component re-renders on a timer (nowMs), so reading from the ref here is OK.
   const currentFix = lastFixRef.current;
@@ -1443,6 +1479,7 @@ window.setTimeout(() => nav('/result'), 250);
   const goalCheckPreview = useMemo(() => {
     if (!online) return null;
     if (!progress) return null;
+    if (progress.config.durationMin === 0) return null;
     if (!currentFix) return null;
 
     const fix = currentFix;
@@ -1484,6 +1521,7 @@ window.setTimeout(() => nav('/result'), 250);
   }, [goalCheckPreview]);
 
   const isGoalOnlyMode = useMemo(() => {
+    if (progress?.config.durationMin === 0) return false;
     const goalOk = !!goalCheckPreview?.ok;
     if (!goalOk) return false;
     // ゴール範囲内 かつ 範囲内に未チェックインのチェックイン/CPが無い場合は「旗」ボタンでゴールチェックイン
@@ -1565,7 +1603,9 @@ window.setTimeout(() => nav('/result'), 250);
     }
     if (spotCode === 'NO_SPOT') {
       if (goalCode === 'NOT_AT_GOAL') {
-        return '近くに未チェックインのチェックイン/CPがありません。ゴール地点の50m以内でゴールチェックインしてください。';
+        return progress?.config.durationMin === 0
+          ? '近くに未チェックインのチェックイン/CPがありません。'
+          : '近くに未チェックインのチェックイン/CPがありません。ゴール地点の50m以内でゴールチェックインしてください。';
       }
       return '近くに未チェックインのチェックイン/CPがありません。';
     }
@@ -1578,7 +1618,7 @@ window.setTimeout(() => nav('/result'), 250);
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    gap: 6,
+    gap: 2,
   };
   const fabStackStyleCheckin: React.CSSProperties = {
     ...fabStackStyle,
@@ -1594,24 +1634,132 @@ window.setTimeout(() => nav('/result'), 250);
     color: '#111',
     userSelect: 'none',
     whiteSpace: 'nowrap',
-    marginTop: 8,
+    marginTop: 2,
     pointerEvents: 'none',
   };
 
-  const labelStyleFor = (disabled: boolean): React.CSSProperties => ({
+  
+  const CooldownRing = ({ progress }: { progress: number }) => {
+    // progress: 0.0 (start) -> 1.0 (end)
+    const p = Math.max(0, Math.min(1, progress));
+    const size = 44; // matches .fabBtn icon area
+    const r = 18;
+    const cx = size / 2;
+    const cy = size / 2;
+    const c = 2 * Math.PI * r;
+    const dashOffset = c * (1 - p);
+
+    return (
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        style={{
+          position: 'absolute',
+          inset: 0,
+          pointerEvents: 'none',
+        }}
+        aria-hidden="true"
+      >
+        {/* base ring */}
+        <circle
+          cx={cx}
+          cy={cy}
+          r={r}
+          fill="none"
+          stroke="rgba(0,0,0,0.15)"
+          strokeWidth={4}
+        />
+        {/* progress ring (clockwise from top) */}
+        <circle
+          cx={cx}
+          cy={cy}
+          r={r}
+          fill="none"
+          stroke="rgba(0,0,0,0.45)"
+          strokeWidth={4}
+          strokeDasharray={c}
+          strokeDashoffset={dashOffset}
+          strokeLinecap="round"
+          transform={`rotate(-90 ${cx} ${cy})`}
+        />
+      </svg>
+    );
+  };
+
+const labelStyleFor = (disabled: boolean): React.CSSProperties => ({
     ...fabLabelStyle,
     color: disabled ? 'rgba(0,0,0,0.35)' : '#111',
   });
 
-  return (
+  
+  function TitleOnlyConfirmModal(props: {
+    open: boolean;
+    title: string;
+    primaryLabel: string;
+    primaryDisabled?: boolean;
+    onPrimary: () => void | Promise<void>;
+    secondaryLabel: string;
+    onSecondary: () => void;
+  }) {
+    if (!props.open) return null;
+    return (
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={props.title}
+        style={{
+          position: 'fixed',
+          inset: 0,
+          background: 'rgba(0,0,0,0.45)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 16,
+          zIndex: 9999,
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+        }}
+        onMouseDown={(e) => {
+          e.stopPropagation();
+          e.preventDefault();
+        }}
+      >
+        <div className="card" style={{ width: 'min(520px, 100%)' }}>
+          <h3>{props.title}</h3>
+          <div className="actions">
+            <button className="btn" onClick={props.onSecondary}>
+              {props.secondaryLabel}
+            </button>
+            <button className="btn primary" disabled={props.primaryDisabled} onClick={props.onPrimary}>
+              {props.primaryLabel}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+return (
     <>
+      <TitleOnlyConfirmModal
+        open={endConfirmOpen}
+        title="プレイを終了しますか？"
+        primaryLabel="終了"
+        onPrimary={async () => {
+          setEndConfirmOpen(false);
+          await endGameNow();
+        }}
+        secondaryLabel="続ける"
+        onSecondary={() => setEndConfirmOpen(false)}
+      />
       <div className="card">
-        <h3>プレイ</h3>
-        {!online && <div className="banner">オフライン/圏外のためチェックインできません。</div>}
+                {!online && <div className="banner">オフライン/圏外のためチェックインできません。</div>}
         <div className="playTimeScore">
           <div className="playTimeScoreBox">
             <div className="playTimeScoreLabel">残り</div>
-            <div className="playTimeScoreValue">{mm}:{ss}</div>
+            <div className="playTimeScoreValue">{isUnlimited ? '♾️' : `${mm}:${ss}`}</div>
           </div>
           <div className="playTimeScoreBox">
             <div className="playTimeScoreLabel">スコア</div>
@@ -1621,16 +1769,26 @@ window.setTimeout(() => nav('/result'), 250);
         <div className="hint">
           CP達成：{progress ? progress.reachedCpIds.length : 0}/{progress ? progress.cpSpotIds.length : 0}
         </div>
-        {progress?.config.jrEnabled && <div className="hint">JRクールダウン：{cooldownLeft > 0 ? `${cooldownLeft}秒` : 'なし'}</div>}
       </div>
 
       <div style={{ height: 12 }} />
       <div className="card" style={{ position: 'relative' }}>
         <div className="mapWrap" ref={mapEl} />
+            {isUnlimited && (
+        <div style={{ position: 'absolute', top: 12, right: 12, zIndex: 6 }}>
+          <button
+            className="fabBtn"
+            aria-label="終了"
+            disabled={!progress}
+            onClick={() => setEndConfirmOpen(true)}
+          >
+            <img className="fabIcon" src={iconSrc('end.svg')} alt="" />
+          </button>
+          <div style={labelStyleFor(!progress)}>終了</div>
+        </div>
+      )}
 
-        {/* 上段中央：残り時間（左）＋得点（右） */}
-
-        {/* Floating action buttons (map overlay)
+      {/* Floating action buttons (map overlay)
             指示：画面下中央に「現在地戻る」。左に「チェックインチェックイン」。右に「乗車」「降車」。 */}
         <div
           className="playFab"
@@ -1691,12 +1849,17 @@ window.setTimeout(() => nav('/result'), 250);
                   title={isJrBoarded ? 'JR 降車チェックイン' : 'JR 乗車チェックイン'}
                   disabled={jrButtonDisabled}
                 >
-                  <img
-                    className="fabIcon"
-                    src={iconSrc(isJrBoarded ? 'jr_off.svg' : 'jr_on.svg')}
-                    alt=""
-                    aria-hidden="true"
-                  />
+                  <span style={{ position: 'relative', display: 'flex', width: 44, height: 44, alignItems: 'center', justifyContent: 'center' }}>
+                    <img
+                      className="fabIcon"
+                      src={iconSrc(isJrBoarded ? 'jr_off.svg' : 'jr_on.svg')}
+                      alt=""
+                      aria-hidden="true"
+                    />
+                    {cooldownLeft > 0 && (
+                      <CooldownRing progress={(JR_COOLDOWN_SEC - cooldownLeft) / JR_COOLDOWN_SEC} />
+                    )}
+                  </span>
                 </button>
                 <div style={labelStyleFor(jrButtonDisabled)}>{isJrBoarded ? '降車' : '乗車'}</div>
               </div>
@@ -1777,20 +1940,7 @@ window.setTimeout(() => nav('/result'), 250);
       </div>
 
       <div style={{ height: 12 }} />
-      <div className="card">
-        <h3>操作ヒント</h3>
-        <div className="hint">{primaryHint}</div>
-        <div className="hint" style={{ marginTop: 8 }}>
-          ・到着判定：50m以内／accuracy≦100m／複数候補時：最近傍→同率ならScore高→それでも同率ならID昇順
-        </div>
-        {progress?.config.jrEnabled && (
-          <div className="hint">
-            ・JR：成功後60秒は無反応／同一駅での乗車・降車は禁止／駅ポイントは同じ駅を1ゲーム1回まで
-          </div>
-        )}
-      </div>
-
-      {/* User Notice Toast (1行＋タップで履歴) */}
+            {/* User Notice Toast (1行＋タップで履歴) */}
       {toastVisible && notices[0] && (
         <div
           onClick={() => setNoticeOpen((v) => !v)}

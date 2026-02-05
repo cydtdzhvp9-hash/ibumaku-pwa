@@ -18,20 +18,37 @@ export default function HomePage() {
         return;
       }
 
-      // If overtime grace has expired, treat as abandoned (no result / no resume)
+      // If the game is not ended, enforce automatic end rules.
       if (!g.endedAtMs) {
-        const plannedEnd = g.startedAtMs + g.config.durationMin * 60_000;
-        const graceEnd = plannedEnd + 60 * 60_000;
         const now = Date.now();
-        if (now > graceEnd) {
-          const abandoned = { ...g, endedAtMs: now, endReason: 'ABANDONED' as const };
-          await saveGame(abandoned);
-          setProgress(abandoned);
-          setHasGame(false);
-          show('タイムアップから1時間を超えたため、途中離脱扱いでゲーム終了しました。');
-          return;
+
+        // Unlimited mode: archive unfinished games when there is no update for 7 days.
+        if ((g.config?.durationMin ?? 0) === 0) {
+          const last = (g.lastUpdatedAtMs ?? g.startedAtMs);
+          const archiveAt = last + 7 * 24 * 60 * 60_000;
+          if (now >= archiveAt) {
+            const archived = { ...g, endedAtMs: now, endReason: 'ARCHIVE' as const };
+            await saveGame(archived);
+            setProgress(archived);
+            setHasGame(false);
+            show('7日間更新がないため、未完了としてアーカイブしました。');
+            return;
+          }
+        } else {
+          // Limited mode: If overtime grace has expired, treat as abandoned (no result / no resume)
+          const plannedEnd = g.startedAtMs + g.config.durationMin * 60_000;
+          const graceEnd = plannedEnd + 60 * 60_000;
+          if (now > graceEnd) {
+            const abandoned = { ...g, endedAtMs: now, endReason: 'ABANDONED' as const };
+            await saveGame(abandoned);
+            setProgress(abandoned);
+            setHasGame(false);
+            show('タイムアップから1時間を超えたため、途中離脱扱いでゲーム終了しました。');
+            return;
+          }
         }
       }
+
 
       // Resume is allowed only when the game is not ended.
       setHasGame(!g.endedAtMs);

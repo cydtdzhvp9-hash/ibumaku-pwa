@@ -31,7 +31,7 @@ export default function ResultPage() {
     (async () => {
       const g = progress ?? await loadGame();
       if (!g || !g.endedAtMs) { nav('/'); return; }
-      if ((g as any).endReason === 'ABANDONED') { nav('/'); return; }
+      if ((g as any).endReason === 'ABANDONED' || (g as any).endReason === 'ARCHIVE') { nav('/'); return; }
       setProgress(g);
       try {
         const [allSpots, sts] = await Promise.all([getAllSpots(), getStationsByOrder()]);

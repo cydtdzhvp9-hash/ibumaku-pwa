@@ -35,7 +35,7 @@ export type Station = {
 };
 
 export type GameConfig = {
-  durationMin: number; // 15min step (dropdown)
+  durationMin: number; // 15min step (dropdown). 0 means unlimited.
   jrEnabled: boolean;
   cpCount: number; // 0..5
   start?: LatLng; // if undefined, uses current location at start
@@ -74,6 +74,7 @@ export type GameProgress = {
   score: number;
   penalty: number;
   endedAtMs?: number;
-  endReason?: 'GOAL' | 'ABANDONED';
+  endReason?: 'GOAL' | 'ABANDONED' | 'MANUAL' | 'ARCHIVE';
+  lastUpdatedAtMs?: number;
   lastLocation?: { lat: number; lng: number; accuracy: number; atMs: number };
 };
